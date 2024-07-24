@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log/slog"
+	"mittere/impl/core"
 	"mittere/internal/config"
 	"mittere/internal/database"
 	"mittere/internal/http-server/api"
@@ -35,8 +36,10 @@ func main() {
 		)
 	}
 
+	handler := core.New(lg)
+
 	// *** blocking start with http server ***
-	err = api.New(conf, lg, nil)
+	err = api.New(conf, lg, handler)
 	if err != nil {
 		lg.Error("server start", sl.Err(err))
 		return
