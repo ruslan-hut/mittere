@@ -24,7 +24,7 @@ jobs:
           sed -i 's|${MONGO_PASSWORD}|'"$MONGO_PASSWORD"'|g' mittere-config.yml
           sed -i 's|${MONGO_DATABASE}|'"$MONGO_DATABASE"'|g' mittere-config.yml
         env:
-          ENV: dev
+          ENV: "dev"
           KEY_FILE: ${{ vars.LISTEN_PORT }}
           MONGO_HOST: ${{ vars.MONGO_HOST }}
           MONGO_PORT: ${{ vars.MONGO_PORT }}

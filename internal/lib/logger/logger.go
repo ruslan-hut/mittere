@@ -41,6 +41,8 @@ func SetupLogger(env, path string) *slog.Logger {
 		logger = slog.New(
 			slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		)
+	default:
+		log.Fatal("invalid environment: ", env)
 	}
 
 	return logger
