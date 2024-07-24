@@ -1,3 +1,4 @@
+![Project Logo](image/mittere-bar.jpg)
 # Mittere
 Mittere is a utility application designed for sending email messages and notifications efficiently. This Go-based application simplifies the process of dispatching emails, making it a valuable tool for developers and system administrators.
 
