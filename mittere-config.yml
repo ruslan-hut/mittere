@@ -1,6 +1,6 @@
 ---
 
-env: ${ENV}
+env: ${LOG_ENV}
 listen:
   bind_ip: 127.0.0.1
   port: ${LISTEN_PORT}

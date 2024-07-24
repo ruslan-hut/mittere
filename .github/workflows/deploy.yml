@@ -16,7 +16,7 @@ jobs:
 
       - name: Prepare configuration file
         run: |
-          sed -i 's|${ENV}|'"ENV"'|g' mittere-config.yml
+          sed -i 's|${LOG_ENV}|'"LOG_ENV"'|g' mittere-config.yml
           sed -i 's|${LISTEN_PORT}|'"LISTEN_PORT"'|g' mittere-config.yml
           sed -i 's|${MONGO_HOST}|'"$MONGO_HOST"'|g' mittere-config.yml
           sed -i 's|${MONGO_PORT}|'"$MONGO_PORT"'|g' mittere-config.yml
@@ -24,7 +24,7 @@ jobs:
           sed -i 's|${MONGO_PASSWORD}|'"$MONGO_PASSWORD"'|g' mittere-config.yml
           sed -i 's|${MONGO_DATABASE}|'"$MONGO_DATABASE"'|g' mittere-config.yml
         env:
-          ENV: ${{ vars.ENV }}
+          LOG_ENV: ${{ vars.ENV }}
           KEY_FILE: ${{ vars.LISTEN_PORT }}
           MONGO_HOST: ${{ vars.MONGO_HOST }}
           MONGO_PORT: ${{ vars.MONGO_PORT }}
