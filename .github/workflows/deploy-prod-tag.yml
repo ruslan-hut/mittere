@@ -15,6 +15,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+
+      - name: Check if tag exists
+        run: |
+          git fetch --all --tags
+          if ! git tag | grep -q "^${{ github.event.inputs.tag }}$"; then
+            echo "error: Tag '${{ github.event.inputs.tag }}' not found"
+            exit 1
+          fi
 
       - name: Prepare configuration file
         run: |
@@ -27,7 +37,7 @@ jobs:
           sed -i 's|${MONGO_DATABASE}|'"$MONGO_DATABASE"'|g' mittere-config.yml
         env:
           LOG_ENV: ${{ vars.ENV }}
-          KEY_FILE: ${{ vars.LISTEN_PORT }}
+          LISTEN_PORT: ${{ vars.LISTEN_PORT }}
           MONGO_HOST: ${{ vars.MONGO_HOST }}
           MONGO_PORT: ${{ vars.MONGO_PORT }}
           MONGO_USER: ${{ vars.MONGO_USER }}
