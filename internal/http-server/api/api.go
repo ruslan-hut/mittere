@@ -41,7 +41,11 @@ func New(conf *config.Config, log *slog.Logger, handler Handler) error {
 	//router.Use(authenticate.New(log, cpo))
 
 	router.Route("/mail", func(r chi.Router) {
-		r.Post("/test", service.SendTest(log, handler))
+		r.Post("/test", service.SendTestMail(log, handler))
+	})
+
+	router.Route("/tg", func(r chi.Router) {
+		r.Post("/test", service.SendTestEvent(log, handler))
 	})
 
 	httpLog := slog.NewLogLogger(log.Handler(), slog.LevelError)

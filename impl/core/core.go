@@ -2,6 +2,7 @@ package core
 
 import (
 	"log/slog"
+	"mittere/entity"
 	"mittere/internal/lib/sl"
 )
 
@@ -15,6 +16,10 @@ func New(log *slog.Logger) *Core {
 	}
 }
 
-func (c *Core) SendTest(recipient string, message string) (interface{}, error) {
+func (c *Core) SendMail(message *entity.MailMessage) (interface{}, error) {
+	return nil, nil
+}
+
+func (c *Core) SendEvent(message *entity.EventMessage) (interface{}, error) {
 	return nil, nil
 }

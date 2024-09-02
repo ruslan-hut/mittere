@@ -5,26 +5,18 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/render"
 	"log/slog"
+	"mittere/entity"
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
-	"mittere/internal/lib/validate"
 	"net/http"
 )
 
 type Service interface {
-	SendTest(recipient string, message string) (interface{}, error)
+	SendMail(message *entity.MailMessage) (interface{}, error)
+	SendEvent(message *entity.EventMessage) (interface{}, error)
 }
 
-type TestMessage struct {
-	To      string `json:"to" validate:"required,email"`
-	Message string `json:"message" validate:"omitempty"`
-}
-
-func (t *TestMessage) Bind(_ *http.Request) error {
-	return validate.Struct(t)
-}
-
-func SendTest(logger *slog.Logger, handler Service) http.HandlerFunc {
+func SendTestMail(logger *slog.Logger, handler Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		log := logger.With(
@@ -32,9 +24,9 @@ func SendTest(logger *slog.Logger, handler Service) http.HandlerFunc {
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
 
-		var message TestMessage
+		var message entity.MailMessage
 		if err := render.Bind(r, &message); err != nil {
-			log.Error("bind test message", sl.Err(err))
+			log.Error("bind test mail message", sl.Err(err))
 			render.Status(r, 400)
 			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to decode: %v", err)))
 			return
@@ -45,14 +37,48 @@ func SendTest(logger *slog.Logger, handler Service) http.HandlerFunc {
 			sl.Secret("message", message.Message),
 		)
 
-		data, err := handler.SendTest(message.To, message.Message)
+		data, err := handler.SendMail(&message)
 		if err != nil {
-			log.Error("send test message", sl.Err(err))
+			log.Error("send test mail message", sl.Err(err))
 			render.Status(r, 204)
-			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to send test message: %v", err)))
+			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to send test mail message: %v", err)))
 			return
 		}
-		log.Info("test message sent")
+		log.Info("test mail message sent")
+
+		render.JSON(w, r, response.Ok(data))
+	}
+}
+
+func SendTestEvent(logger *slog.Logger, handler Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		log := logger.With(
+			sl.Module("handlers.service"),
+			slog.String("request_id", middleware.GetReqID(r.Context())),
+		)
+
+		var message entity.EventMessage
+		if err := render.Bind(r, &message); err != nil {
+			log.Error("bind test event message", sl.Err(err))
+			render.Status(r, 400)
+			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to decode: %v", err)))
+			return
+		}
+
+		log = log.With(
+			slog.String("type", message.Type),
+			sl.Secret("username", message.Username),
+		)
+
+		data, err := handler.SendEvent(&message)
+		if err != nil {
+			log.Error("send test event message", sl.Err(err))
+			render.Status(r, 204)
+			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to send test event message: %v", err)))
+			return
+		}
+		log.Info("test event message sent")
 
 		render.JSON(w, r, response.Ok(data))
 	}
