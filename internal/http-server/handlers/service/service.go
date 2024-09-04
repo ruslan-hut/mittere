@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/render"
 	"log/slog"
 	"mittere/entity"
+	"mittere/internal/lib/api/cont"
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
 	"net/http"
@@ -19,8 +20,11 @@ type Service interface {
 func SendTestMail(logger *slog.Logger, handler Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
+		user := cont.GetUser(r.Context())
+
 		log := logger.With(
 			sl.Module("handlers.service"),
+			slog.String("user", user.Username),
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
 
@@ -33,9 +37,10 @@ func SendTestMail(logger *slog.Logger, handler Service) http.HandlerFunc {
 		}
 
 		log = log.With(
-			slog.String("to", message.To),
+			slog.String("message.to", message.To),
 			sl.Secret("message", message.Message),
 		)
+		message.Sender = user
 
 		data, err := handler.SendMail(&message)
 		if err != nil {
@@ -53,8 +58,11 @@ func SendTestMail(logger *slog.Logger, handler Service) http.HandlerFunc {
 func SendTestEvent(logger *slog.Logger, handler Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
+		user := cont.GetUser(r.Context())
+
 		log := logger.With(
 			sl.Module("handlers.service"),
+			slog.String("user", user.Username),
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
 
@@ -67,9 +75,10 @@ func SendTestEvent(logger *slog.Logger, handler Service) http.HandlerFunc {
 		}
 
 		log = log.With(
-			slog.String("type", message.Type),
-			sl.Secret("username", message.Username),
+			slog.String("message.type", message.Type),
+			sl.Secret("message.username", message.Username),
 		)
+		message.Sender = user
 
 		data, err := handler.SendEvent(&message)
 		if err != nil {
