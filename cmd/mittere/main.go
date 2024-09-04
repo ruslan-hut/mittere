@@ -28,7 +28,7 @@ func main() {
 		lg.Error("mongo client", sl.Err(err))
 	}
 	if mongo != nil {
-		lg.Debug("mongo client initialized",
+		lg.Info("mongo client initialized",
 			slog.String("host", conf.Mongo.Host),
 			slog.String("port", conf.Mongo.Port),
 			slog.String("user", conf.Mongo.User),
@@ -36,7 +36,7 @@ func main() {
 		)
 	}
 
-	handler := core.New(lg)
+	handler := core.New(mongo, lg)
 
 	// *** blocking start with http server ***
 	err = api.New(conf, lg, handler)

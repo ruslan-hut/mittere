@@ -4,20 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"mittere/entity"
 	"mittere/internal/config"
 )
 
 const (
-	credentialsCollection = "credentials"
-	specialCollection     = "special"
-	locationsCollection   = "locations"
-	tokensCollection      = "tokens"
-	sessionsCollection    = "sessions"
-	cdrsCollection        = "cdrs"
-	tariffsCollection     = "tariffs"
-	authorizeCollection   = "authorize"
+	usersCollection = "users"
 )
 
 type MongoDB struct {
@@ -64,4 +59,25 @@ func (m *MongoDB) findError(err error) error {
 		return nil
 	}
 	return fmt.Errorf("mongodb find error: %w", err)
+}
+
+func (m *MongoDB) GetUser(token string) (*entity.User, error) {
+	connection, err := m.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer m.disconnect(connection)
+
+	collection := connection.Database(m.database).Collection(usersCollection)
+	filter := bson.M{"token": token}
+	result := collection.FindOne(m.ctx, filter)
+	if result.Err() != nil {
+		return nil, m.findError(result.Err())
+	}
+	user := &entity.User{}
+	err = result.Decode(user)
+	if err != nil {
+		return nil, fmt.Errorf("mongodb decode error: %w", err)
+	}
+	return user, nil
 }

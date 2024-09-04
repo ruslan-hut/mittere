@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"mittere/internal/config"
 	"mittere/internal/http-server/handlers/service"
+	"mittere/internal/http-server/middleware/authenticate"
 	"mittere/internal/http-server/middleware/timeout"
 	"mittere/internal/lib/sl"
 	"net"
@@ -21,6 +22,7 @@ type Server struct {
 }
 
 type Handler interface {
+	authenticate.Authenticate
 	service.Service
 }
 
@@ -38,7 +40,7 @@ func New(conf *config.Config, log *slog.Logger, handler Handler) error {
 	router.Use(render.SetContentType(render.ContentTypeJSON))
 
 	//router.Use(logger.New(log))
-	//router.Use(authenticate.New(log, cpo))
+	router.Use(authenticate.New(log, handler))
 
 	router.Route("/mail", func(r chi.Router) {
 		r.Post("/test", service.SendTestMail(log, handler))
