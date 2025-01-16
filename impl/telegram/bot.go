@@ -162,15 +162,15 @@ func (b *TgBot) sendMessage(id int64, text string) {
 
 func (b *TgBot) OnStatusNotification(event *entity.EventMessage) {
 	// only send notifications about Faulted status
-	if event.Status != "Faulted" {
-		return
-	}
-	var msg string
-	msg = fmt.Sprintf("*%v*: `%v`\n", event.Type, event.Status)
-	if event.Info != "" {
-		msg += fmt.Sprintf("%v\n", sanitize(event.Info))
-	}
-	b.event <- MessageContent{Text: msg}
+	//if event.Status != "Faulted" {
+	//	return
+	//}
+	//var msg string
+	//msg = fmt.Sprintf("*%v*: `%v`\n", event.Type, event.Status)
+	//if event.Info != "" {
+	//	msg += fmt.Sprintf("%v\n", sanitize(event.Info))
+	//}
+	//b.event <- MessageContent{Text: msg}
 }
 
 func removeMarkup(input string) string {
