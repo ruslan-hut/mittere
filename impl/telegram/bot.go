@@ -107,7 +107,7 @@ func (b *TgBot) updatesPump() {
 			if b.isAdmin(&update) {
 				msg := "Invite codes:\n"
 				for _, code := range b.invites {
-					msg = fmt.Sprintf(msg, code, "\n")
+					msg += fmt.Sprintf("%v\n", code)
 				}
 				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 			}
