@@ -38,6 +38,7 @@ func main() {
 	}
 
 	handler := core.New(mongo, lg)
+	handler.SetToken(conf.AuthToken)
 
 	if conf.Telegram.Enabled {
 		tg, e := telegram.New(conf.Telegram.ApiKey, lg)

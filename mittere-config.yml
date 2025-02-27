@@ -4,6 +4,7 @@ env: ${LOG_ENV}
 listen:
   bind_ip: 127.0.0.1
   port: ${LISTEN_PORT}
+auth_token: ${AUTH_TOKEN}
 mongo:
   enabled: true
   host: ${MONGO_HOST}

@@ -36,6 +36,7 @@ jobs:
           sed -i 's|${MONGO_PASSWORD}|'"$MONGO_PASSWORD"'|g' mittere-config.yml
           sed -i 's|${MONGO_DATABASE}|'"$MONGO_DATABASE"'|g' mittere-config.yml
           sed -i 's|${TELEGRAM_API_KEY}|'"$TELEGRAM_API_KEY"'|g' mittere-config.yml
+          sed -i 's|${AUTH_TOKEN}|'"$AUTH_TOKEN"'|g' mittere-config.yml
         env:
           LOG_ENV: ${{ vars.ENV }}
           LISTEN_PORT: ${{ vars.LISTEN_PORT }}
@@ -45,6 +46,7 @@ jobs:
           MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
           MONGO_DATABASE: ${{ vars.MONGO_DATABASE }}
           TELEGRAM_API_KEY: ${{ secrets.TELEGRAM_API_KEY }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
 
       - name: Copy Configuration to Server
         uses: appleboy/scp-action@master

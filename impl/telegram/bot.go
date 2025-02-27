@@ -167,18 +167,16 @@ func (b *TgBot) sendMessage(id int64, text string) {
 }
 
 func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
-	var msg string
-	if em.Sender != nil {
-		msg = fmt.Sprintf("*%v*: `%v`\n", em.Sender.Name, em.Subject)
-	} else {
-		msg = fmt.Sprintf("`%v`\n", em.Subject)
-	}
+	msg := fmt.Sprintf("*%v*: `#%v`\n", em.Type, em.Subject)
 	if em.Text != "" {
 		msg += fmt.Sprintf("%v\n", sanitize(em.Text))
 	}
 	if em.Payload != nil {
 		payload := fmt.Sprintf("%v\n", em.Payload)
 		msg += fmt.Sprintf("```\n%v\n```", sanitize(payload))
+	}
+	if em.Sender != nil {
+		msg += fmt.Sprintf("\n`%v`", em.Sender.Name)
 	}
 	b.event <- MessageContent{Text: msg}
 	return nil

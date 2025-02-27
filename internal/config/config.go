@@ -13,7 +13,8 @@ type Config struct {
 		BindIP string `yaml:"bind_ip" env-default:"127.0.0.1"`
 		Port   string `yaml:"port" env-default:"9800"`
 	} `yaml:"listen"`
-	Mongo struct {
+	AuthToken string `yaml:"auth_token" env-default:""`
+	Mongo     struct {
 		Enabled  bool   `yaml:"enabled" env-default:"false"`
 		Host     string `yaml:"host" env-default:"127.0.0.1"`
 		Port     string `yaml:"port" env-default:"27017"`

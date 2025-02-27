@@ -16,9 +16,10 @@ type MessageService interface {
 }
 
 type Core struct {
-	repo Repository
-	ms   MessageService
-	log  *slog.Logger
+	repo  Repository
+	ms    MessageService
+	token string
+	log   *slog.Logger
 }
 
 func New(repo Repository, log *slog.Logger) *Core {
@@ -32,7 +33,11 @@ func (c *Core) SetMessageService(ms MessageService) {
 	c.ms = ms
 }
 
-func (c *Core) SendMail(message *entity.MailMessage) (interface{}, error) {
+func (c *Core) SetToken(token string) {
+	c.token = token
+}
+
+func (c *Core) SendMail(_ *entity.MailMessage) (interface{}, error) {
 	return nil, nil
 }
 
@@ -46,6 +51,12 @@ func (c *Core) SendEvent(message *entity.EventMessage) (interface{}, error) {
 func (c *Core) AuthenticateByToken(token string) (*entity.User, error) {
 	if token == "" {
 		return nil, fmt.Errorf("token not provided")
+	}
+	if c.token != "" && c.token == token {
+		return &entity.User{
+			Username: "system",
+			Name:     "system",
+		}, nil
 	}
 	if c.repo == nil {
 		return nil, fmt.Errorf("repository not initialized")
