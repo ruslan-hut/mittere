@@ -12,8 +12,8 @@ func (b *TgBot) subscribe(update *tgbotapi.Update) string {
 	if b.getSubscription(userId) != nil {
 		return "Already subscribed"
 	}
-	subscription := entity.NewSubscription(update.Message.From.ID, update.Message.From.UserName)
-	b.subscriptions[update.Message.From.ID] = subscription
+	subscription := entity.NewSubscription(userId, update.Message.From.UserName)
+	b.subscriptions[userId] = subscription
 	if b.database != nil {
 		err := b.database.AddSubscription(&subscription)
 		if err != nil {
@@ -31,6 +31,7 @@ func (b *TgBot) confirmSubscription(update *tgbotapi.Update) string {
 		return "Subscription not found"
 	}
 	subscription.Confirm()
+	b.subscriptions[userId] = subscription
 	if b.database != nil {
 		err := b.database.UpdateSubscription(&subscription)
 		if err != nil {
