@@ -173,7 +173,7 @@ func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
 	}
 	if em.Payload != nil {
 		payload := fmt.Sprintf("%v\n", em.Payload)
-		msg += fmt.Sprintf("```%v\n```", sanitize(payload))
+		msg += fmt.Sprintf("```\n%v\n```", sanitize(payload))
 	}
 	b.event <- MessageContent{Text: msg}
 	return nil
