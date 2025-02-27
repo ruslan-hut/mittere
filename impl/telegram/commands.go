@@ -77,8 +77,10 @@ func (b *TgBot) getSubscription(userId int) *entity.Subscription {
 }
 
 func (b *TgBot) checkInviteCode(code string) bool {
-	for _, invite := range b.invites {
+	for i, invite := range b.invites {
 		if invite == code {
+			// Remove the invite code from the slice
+			b.invites = append(b.invites[:i], b.invites[i+1:]...)
 			return true
 		}
 	}

@@ -88,6 +88,7 @@ func (b *TgBot) updatesPump() {
 			if b.checkInviteCode(update.Message.Text) {
 				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.confirmSubscription(&update)}
 			}
+			continue
 		}
 		switch update.Message.Command() {
 		case "start":
