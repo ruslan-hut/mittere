@@ -146,6 +146,7 @@ func (b *TgBot) sendMessage(id int64, text string) {
 	msg.ParseMode = "MarkdownV2"
 	_, err := b.api.Send(msg)
 	if err != nil {
+		b.log.Warn("sending message", sl.Err(err))
 		safeMsg := tgbotapi.NewMessage(id, fmt.Sprintf("This message caused an error:\n%v", removeMarkup(text)))
 		_, err = b.api.Send(safeMsg)
 		if err != nil {
