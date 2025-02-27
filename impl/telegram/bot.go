@@ -127,7 +127,9 @@ func (b *TgBot) eventPump() {
 	for {
 		if event, ok := <-b.event; ok {
 			for _, subscription := range b.subscriptions {
-				b.sendMessage(int64(subscription.UserID), event.Text)
+				if subscription.IsActive() {
+					b.sendMessage(int64(subscription.UserID), event.Text)
+				}
 			}
 		}
 	}

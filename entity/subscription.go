@@ -25,3 +25,7 @@ func (s *Subscription) Confirm() {
 func (s *Subscription) IsAdmin() bool {
 	return s.Role == "admin"
 }
+
+func (s *Subscription) IsActive() bool {
+	return s.State == "active"
+}
