@@ -112,7 +112,7 @@ func (b *TgBot) updatesPump() {
 			}
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Your subscription has been removed"}
 		case "test":
-			msg := fmt.Sprintf("*%v*: `%v`\n %v", "MONITOR", "Warn", "This is a test notification, relax.")
+			msg := fmt.Sprintf("*%v*: `%v`\n %v", "MONITOR", "Warn", "This is a test notification, relax")
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 		default:
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Unknown command"}
