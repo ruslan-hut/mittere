@@ -44,6 +44,9 @@ func main() {
 		if e != nil {
 			lg.Error("telegram api", sl.Err(e))
 		}
+		if mongo != nil {
+			tg.SetDatabase(mongo)
+		}
 		tg.Start()
 		lg.Info("telegram api initialized")
 		handler.SetMessageService(tg)

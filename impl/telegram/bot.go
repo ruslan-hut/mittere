@@ -6,12 +6,12 @@ import (
 	"log/slog"
 	"mittere/entity"
 	"mittere/internal/lib/sl"
-	"strings"
 )
 
 type Repository interface {
 	GetSubscriptions() ([]entity.Subscription, error)
 	AddSubscription(subscription *entity.Subscription) error
+	UpdateSubscription(subscription *entity.Subscription) error
 	DeleteSubscription(subscription *entity.Subscription) error
 }
 
@@ -20,6 +20,7 @@ type TgBot struct {
 	api           *tgbotapi.BotAPI
 	database      Repository
 	subscriptions map[int]entity.Subscription
+	invites       []string
 	event         chan MessageContent
 	send          chan MessageContent
 	log           *slog.Logger
@@ -63,6 +64,7 @@ func (b *TgBot) Start() {
 				b.subscriptions[subscription.UserID] = subscription
 			}
 		}
+		b.log.With(slog.Int("count", len(b.subscriptions))).Info("subscriptions loaded")
 	}
 	go b.sendPump()
 	go b.eventPump()
@@ -83,34 +85,34 @@ func (b *TgBot) updatesPump() {
 			continue
 		}
 		if !update.Message.IsCommand() {
-			continue
+			if b.checkInviteCode(update.Message.Text) {
+				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.confirmSubscription(&update)}
+			}
 		}
 		switch update.Message.Command() {
 		case "start":
-			subscription := entity.Subscription{
-				UserID:           update.Message.From.ID,
-				User:             update.Message.From.UserName,
-				SubscriptionType: "status",
+			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.subscribe(&update)}
+		case "invite":
+			if b.isAdmin(&update) {
+				code := generatePinCode()
+				b.invites = append(b.invites, code)
+				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: code}
 			}
-			b.subscriptions[update.Message.From.ID] = subscription
-			msg := fmt.Sprintf("Hello *%v*, you are now subscribed to updates", update.Message.From.UserName)
-			if b.database != nil {
-				err = b.database.AddSubscription(&subscription)
-				if err != nil {
-					b.log.Error("adding subscription", sl.Err(err))
-					msg = fmt.Sprintf("Error adding subscription:\n `%v`", err)
+		case "clear":
+			if b.isAdmin(&update) {
+				b.invites = []string{}
+				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Invite codes cleared"}
+			}
+		case "list":
+			if b.isAdmin(&update) {
+				msg := "Invite codes:\n"
+				for _, code := range b.invites {
+					msg = fmt.Sprintf(msg, code, "\n")
 				}
+				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 			}
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 		case "stop":
-			delete(b.subscriptions, update.Message.From.ID)
-			if b.database != nil {
-				err = b.database.DeleteSubscription(&entity.Subscription{UserID: update.Message.From.ID})
-				if err != nil {
-					b.log.Error("deleting subscription", sl.Err(err))
-				}
-			}
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Your subscription has been removed"}
+			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.deleteSubscription(&update)}
 		case "test":
 			msg := fmt.Sprintf("*%v*: `%v`\n %v", "MONITOR", "Warn", "This is a test notification, relax")
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
@@ -177,37 +179,4 @@ func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
 	}
 	b.event <- MessageContent{Text: msg}
 	return nil
-}
-
-func removeMarkup(input string) string {
-	reservedChars := "\\`*_|"
-
-	sanitized := ""
-	for _, char := range input {
-		if !strings.ContainsRune(reservedChars, char) {
-			sanitized += string(char)
-		}
-	}
-
-	return sanitized
-}
-
-func sanitize(input string) string {
-	// Define a list of reserved characters that need to be escaped
-	reservedChars := "\\`*_{}[]()#+-.!|"
-
-	// Loop through each character in the input string
-	sanitized := ""
-	for _, char := range input {
-		// Check if the character is reserved
-		if strings.ContainsRune(reservedChars, char) {
-			// Escape the character with a backslash
-			sanitized += "\\" + string(char)
-		} else {
-			// Add the character to the sanitized string
-			sanitized += string(char)
-		}
-	}
-
-	return sanitized
 }
