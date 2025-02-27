@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log/slog"
 	"mittere/impl/core"
+	"mittere/impl/telegram"
 	"mittere/internal/config"
 	"mittere/internal/database"
 	"mittere/internal/http-server/api"
@@ -37,6 +38,15 @@ func main() {
 	}
 
 	handler := core.New(mongo, lg)
+
+	if conf.Telegram.Enabled {
+		tg, e := telegram.New(conf.Telegram.ApiKey, lg)
+		if e != nil {
+			lg.Error("telegram api", sl.Err(e))
+		}
+		lg.Info("telegram api initialized")
+		handler.SetMessageService(tg)
+	}
 
 	// *** blocking start with http server ***
 	err = api.New(conf, lg, handler)

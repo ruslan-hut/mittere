@@ -41,7 +41,7 @@ func New(apiKey string, log *slog.Logger) (*TgBot, error) {
 	if err != nil {
 		return nil, err
 	}
-	tgBot.log.With(sl.Secret("api_key", apiKey)).Info("telegram bot created")
+	tgBot.log.With(sl.Secret("api_key", apiKey)).Debug("telegram bot created")
 	tgBot.api = api
 	return tgBot, nil
 }
@@ -112,7 +112,7 @@ func (b *TgBot) updatesPump() {
 			}
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Your subscription has been removed"}
 		case "test":
-			msg := fmt.Sprintf("*%v*: Connector %v: `%v`", "ChargePointId", 1, "Status")
+			msg := fmt.Sprintf("*%v*: `%v`\n %v", "MONITOR", "Warn", "This is a test notification, relax.")
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 		default:
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Unknown command"}
@@ -160,17 +160,21 @@ func (b *TgBot) sendMessage(id int64, text string) {
 	}
 }
 
-func (b *TgBot) OnStatusNotification(event *entity.EventMessage) {
-	// only send notifications about Faulted status
-	//if event.Status != "Faulted" {
-	//	return
-	//}
-	//var msg string
-	//msg = fmt.Sprintf("*%v*: `%v`\n", event.Type, event.Status)
-	//if event.Info != "" {
-	//	msg += fmt.Sprintf("%v\n", sanitize(event.Info))
-	//}
-	//b.event <- MessageContent{Text: msg}
+func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
+	var msg string
+	if em.Sender != nil {
+		msg = fmt.Sprintf("*%v*: `%v`\n", em.Sender.Name, em.Subject)
+	} else {
+		msg = fmt.Sprintf("`%v`\n", em.Subject)
+	}
+	if em.Text != "" {
+		msg += fmt.Sprintf("%v\n", sanitize(em.Text))
+	}
+	if em.Payload != nil {
+		msg += fmt.Sprintf("```%v\n```", sanitize(em.Text))
+	}
+	b.event <- MessageContent{Text: msg}
+	return nil
 }
 
 func removeMarkup(input string) string {

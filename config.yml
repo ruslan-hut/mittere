@@ -11,3 +11,6 @@ mongo:
   user: postman
   password: pass
   database: evsys
+telegram:
+  enabled: false
+  api_key: telegram-api-key

@@ -11,3 +11,6 @@ mongo:
   user: ${MONGO_USER}
   password: ${MONGO_PASSWORD}
   database: ${MONGO_DATABASE}
+telegram:
+  enabled: true
+  api_key: ${TELEGRAM_API_KEY}
