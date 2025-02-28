@@ -5,6 +5,7 @@ type Subscription struct {
 	User             string `json:"user" bson:"user"`
 	Role             string `json:"role" bson:"role"`
 	State            string `json:"state" bson:"state"`
+	IsVerified       bool   `json:"is_verified" bson:"is_verified"`
 	SubscriptionType string `json:"subscription_type" bson:"subscription_type"`
 }
 
@@ -20,6 +21,11 @@ func NewSubscription(userId int, user string) Subscription {
 
 func (s *Subscription) Confirm() {
 	s.State = "active"
+	s.IsVerified = true
+}
+
+func (s *Subscription) Disable() {
+	s.State = "disabled"
 }
 
 func (s *Subscription) IsAdmin() bool {

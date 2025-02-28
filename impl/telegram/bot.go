@@ -10,9 +10,8 @@ import (
 
 type Repository interface {
 	GetSubscriptions() ([]entity.Subscription, error)
-	AddSubscription(subscription *entity.Subscription) error
+	GetSubscription(id int) (*entity.Subscription, error)
 	UpdateSubscription(subscription *entity.Subscription) error
-	DeleteSubscription(subscription *entity.Subscription) error
 }
 
 // TgBot implements EventHandler

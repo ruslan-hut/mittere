@@ -9,17 +9,27 @@ import (
 
 func (b *TgBot) subscribe(update *tgbotapi.Update) string {
 	userId := update.Message.From.ID
-	if b.getSubscription(userId) != nil {
-		return "Already subscribed"
-	}
-	subscription := entity.NewSubscription(userId, update.Message.From.UserName)
-	b.subscriptions[userId] = subscription
-	if b.database != nil {
-		err := b.database.AddSubscription(&subscription)
-		if err != nil {
-			b.log.Error("adding subscription", sl.Err(err))
-			return fmt.Sprintf("Error adding subscription:\n `%v`", err)
+
+	sub := b.getSubscription(userId)
+	if sub != nil {
+		if sub.IsActive() {
+			return "Already subscribed"
 		}
+		if sub.IsVerified {
+			sub.Confirm()
+			err := b.updateSubscription(sub)
+			if err != nil {
+				return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
+			}
+			return fmt.Sprintf("Subscription is activated, enjoy")
+		}
+		return "Awaiting confirmation, send invite code"
+	}
+
+	subscription := entity.NewSubscription(userId, update.Message.From.UserName)
+	err := b.updateSubscription(&subscription)
+	if err != nil {
+		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 	}
 	return fmt.Sprintf("Hello *%v*, you are registered\n To activate notifications, send invite code", update.Message.From.UserName)
 }
@@ -31,15 +41,24 @@ func (b *TgBot) confirmSubscription(update *tgbotapi.Update) string {
 		return "Subscription not found"
 	}
 	subscription.Confirm()
-	b.subscriptions[userId] = subscription
-	if b.database != nil {
-		err := b.database.UpdateSubscription(&subscription)
-		if err != nil {
-			b.log.Error("updating subscription", sl.Err(err))
-			return fmt.Sprintf("Error updating subscription:\n `%v`", err)
-		}
+	err := b.updateSubscription(&subscription)
+	if err != nil {
+		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 	}
 	return fmt.Sprintf("Subscription is activated, enjoy")
+}
+
+// updateSubscription updates a subscription, with upsert option
+func (b *TgBot) updateSubscription(subscription *entity.Subscription) error {
+	b.subscriptions[subscription.UserID] = *subscription
+	if b.database != nil {
+		err := b.database.UpdateSubscription(subscription)
+		if err != nil {
+			b.log.Error("updating subscription", sl.Err(err))
+			return fmt.Errorf("failed to update subscription")
+		}
+	}
+	return nil
 }
 
 func (b *TgBot) deleteSubscription(update *tgbotapi.Update) string {
@@ -48,14 +67,11 @@ func (b *TgBot) deleteSubscription(update *tgbotapi.Update) string {
 	if b.getSubscription(userId) == nil {
 		return "Subscription not found"
 	}
-	if b.database != nil {
-		err := b.database.DeleteSubscription(&subscription)
-		if err != nil {
-			b.log.Error("deleting subscription", sl.Err(err))
-			return fmt.Sprintf("Error deleting subscription:\n `%v`", err)
-		}
+	subscription.Disable()
+	err := b.updateSubscription(&subscription)
+	if err != nil {
+		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 	}
-	delete(b.subscriptions, userId)
 	return fmt.Sprintf("Subscription deleted")
 }
 
@@ -72,6 +88,18 @@ func (b *TgBot) getSubscription(userId int) *entity.Subscription {
 	for _, subscription := range b.subscriptions {
 		if subscription.UserID == userId {
 			return &subscription
+		}
+	}
+	// check in database
+	if b.database != nil {
+		subscription, err := b.database.GetSubscription(userId)
+		if err != nil {
+			b.log.Error("getting subscription", sl.Err(err))
+			return nil
+		}
+		if subscription != nil {
+			b.subscriptions[userId] = *subscription
+			return subscription
 		}
 	}
 	return nil

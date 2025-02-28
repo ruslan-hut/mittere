@@ -122,41 +122,6 @@ func (m *MongoDB) GetSubscription(id int) (*entity.Subscription, error) {
 	return &subscription, nil
 }
 
-// AddSubscription adds a new subscription
-func (m *MongoDB) AddSubscription(subscription *entity.Subscription) error {
-	existedSubscription, _ := m.GetSubscription(subscription.UserID)
-	if existedSubscription != nil {
-		return fmt.Errorf("user is already subscribed")
-	}
-	connection, err := m.connect()
-	if err != nil {
-		return err
-	}
-	defer m.disconnect(connection)
-
-	if subscription.UserID == 0 || subscription.User == "" {
-		return fmt.Errorf("wrong user id")
-	}
-
-	collection := connection.Database(m.database).Collection(subscriptionsCollection)
-	_, err = collection.InsertOne(m.ctx, subscription)
-	return err
-}
-
-// DeleteSubscription deletes a subscription
-func (m *MongoDB) DeleteSubscription(subscription *entity.Subscription) error {
-	connection, err := m.connect()
-	if err != nil {
-		return err
-	}
-	defer m.disconnect(connection)
-
-	filter := bson.D{{"user_id", subscription.UserID}}
-	collection := connection.Database(m.database).Collection(subscriptionsCollection)
-	_, err = collection.DeleteOne(m.ctx, filter)
-	return err
-}
-
 // UpdateSubscription updates a subscription
 func (m *MongoDB) UpdateSubscription(subscription *entity.Subscription) error {
 	connection, err := m.connect()
@@ -168,7 +133,7 @@ func (m *MongoDB) UpdateSubscription(subscription *entity.Subscription) error {
 	filter := bson.D{{"user_id", subscription.UserID}}
 	update := bson.M{"$set": subscription}
 	collection := connection.Database(m.database).Collection(subscriptionsCollection)
-	_, err = collection.UpdateOne(m.ctx, filter, update)
+	_, err = collection.UpdateOne(m.ctx, filter, update, options.Update().SetUpsert(true))
 	if err != nil {
 		return err
 	}
