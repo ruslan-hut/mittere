@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"mittere/internal/config"
 	"mittere/internal/http-server/handlers/service"
+	"mittere/internal/http-server/handlers/telegram"
 	"mittere/internal/http-server/middleware/authenticate"
 	"mittere/internal/http-server/middleware/timeout"
 	"mittere/internal/lib/sl"
@@ -24,6 +25,7 @@ type Server struct {
 type Handler interface {
 	authenticate.Authenticate
 	service.Service
+	telegram.Handler
 }
 
 func New(conf *config.Config, log *slog.Logger, handler Handler) error {
@@ -47,7 +49,8 @@ func New(conf *config.Config, log *slog.Logger, handler Handler) error {
 	})
 
 	router.Route("/tg", func(r chi.Router) {
-		r.Post("/test", service.SendTestEvent(log, handler))
+		r.Get("/test", service.SendTestEvent(log, handler))
+		r.Post("/msg", telegram.SendMessage(log, handler))
 	})
 
 	httpLog := slog.NewLogLogger(log.Handler(), slog.LevelError)

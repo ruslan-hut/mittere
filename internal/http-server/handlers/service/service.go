@@ -10,6 +10,7 @@ import (
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
 	"net/http"
+	"time"
 )
 
 type Service interface {
@@ -66,19 +67,14 @@ func SendTestEvent(logger *slog.Logger, handler Service) http.HandlerFunc {
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
 
-		var message entity.EventMessage
-		if err := render.Bind(r, &message); err != nil {
-			log.Error("bind test event message", sl.Err(err))
-			render.Status(r, 400)
-			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to decode: %v", err)))
-			return
+		message := entity.EventMessage{
+			Type:     "notification",
+			Subject:  "test",
+			Time:     time.Now(),
+			Username: "Someone",
+			Text:     "This is a test, relax",
+			Payload:  "is this a test?",
 		}
-
-		log = log.With(
-			slog.String("message.type", message.Type),
-			sl.Secret("message.username", message.Username),
-		)
-		message.Sender = user
 
 		data, err := handler.SendEvent(&message)
 		if err != nil {

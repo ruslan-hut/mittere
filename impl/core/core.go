@@ -48,6 +48,13 @@ func (c *Core) SendEvent(message *entity.EventMessage) (interface{}, error) {
 	return nil, c.ms.SendEventMessage(message)
 }
 
+func (c *Core) Notify(message *entity.EventMessage) (interface{}, error) {
+	if c.ms == nil {
+		return nil, fmt.Errorf("not set MessageService")
+	}
+	return nil, c.ms.SendEventMessage(message)
+}
+
 func (c *Core) AuthenticateByToken(token string) (*entity.User, error) {
 	if token == "" {
 		return nil, fmt.Errorf("token not provided")
