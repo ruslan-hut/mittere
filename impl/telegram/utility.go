@@ -22,8 +22,8 @@ func removeMarkup(input string) string {
 
 func sanitize(input string) string {
 	// Define a list of reserved characters that need to be escaped
-	//reservedChars := "\\`*_{}[]()#+-.!|"
-	reservedChars := "\\`_{}#+-.!|"
+	//reservedChars := "\\`*_{}[]()#+-.!|="
+	reservedChars := "\\`_{}[]()#+-.!|="
 
 	// Loop through each character in the input string
 	sanitized := ""
