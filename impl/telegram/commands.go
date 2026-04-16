@@ -2,12 +2,12 @@ package telegram
 
 import (
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/go-telegram/bot/models"
 	"mittere/entity"
 	"mittere/internal/lib/sl"
 )
 
-func (b *TgBot) subscribe(update *tgbotapi.Update) string {
+func (b *TgBot) subscribe(update *models.Update) string {
 	userId := update.Message.From.ID
 
 	b.mu.Lock()
@@ -29,15 +29,15 @@ func (b *TgBot) subscribe(update *tgbotapi.Update) string {
 		return "Awaiting confirmation, send invite code"
 	}
 
-	subscription := entity.NewSubscription(userId, update.Message.From.UserName)
+	subscription := entity.NewSubscription(userId, update.Message.From.Username)
 	err := b.updateSubscriptionLocked(&subscription)
 	if err != nil {
 		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 	}
-	return fmt.Sprintf("Hello *%v*, you are registered\n To activate notifications, send invite code", update.Message.From.UserName)
+	return fmt.Sprintf("Hello *%v*, you are registered\n To activate notifications, send invite code", update.Message.From.Username)
 }
 
-func (b *TgBot) confirmSubscription(update *tgbotapi.Update) string {
+func (b *TgBot) confirmSubscription(update *models.Update) string {
 	userId := update.Message.From.ID
 
 	b.mu.Lock()
@@ -68,7 +68,7 @@ func (b *TgBot) updateSubscriptionLocked(subscription *entity.Subscription) erro
 	return nil
 }
 
-func (b *TgBot) deleteSubscription(update *tgbotapi.Update) string {
+func (b *TgBot) deleteSubscription(update *models.Update) string {
 	userId := update.Message.From.ID
 
 	b.mu.Lock()
@@ -86,7 +86,7 @@ func (b *TgBot) deleteSubscription(update *tgbotapi.Update) string {
 	return fmt.Sprintf("Subscription deleted")
 }
 
-func (b *TgBot) isAdmin(update *tgbotapi.Update) bool {
+func (b *TgBot) isAdmin(update *models.Update) bool {
 	userId := update.Message.From.ID
 
 	b.mu.RLock()
@@ -100,7 +100,7 @@ func (b *TgBot) isAdmin(update *tgbotapi.Update) bool {
 }
 
 // getSubscriptionLocked looks up a subscription by userId. Caller must hold b.mu (read or write).
-func (b *TgBot) getSubscriptionLocked(userId int) *entity.Subscription {
+func (b *TgBot) getSubscriptionLocked(userId int64) *entity.Subscription {
 	if sub, ok := b.subscriptions[userId]; ok {
 		return &sub
 	}

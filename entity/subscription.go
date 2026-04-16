@@ -10,7 +10,7 @@ const (
 )
 
 type Subscription struct {
-	UserID           int    `json:"user_id" bson:"user_id"`
+	UserID           int64  `json:"user_id" bson:"user_id"`
 	User             string `json:"user" bson:"user"`
 	Role             string `json:"role" bson:"role"`
 	State            string `json:"state" bson:"state"`
@@ -18,7 +18,7 @@ type Subscription struct {
 	SubscriptionType string `json:"subscription_type" bson:"subscription_type"`
 }
 
-func NewSubscription(userId int, user string) Subscription {
+func NewSubscription(userId int64, user string) Subscription {
 	return Subscription{
 		UserID:           userId,
 		User:             user,

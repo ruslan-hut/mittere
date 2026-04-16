@@ -63,7 +63,7 @@ All routes require `Authorization: Bearer <token>` header. Routes defined in `ap
 
 ### Telegram bot
 
-Uses long-polling (`updatesPump`). Commands: `/start`, `/stop`, `/test`, `/invite`, `/clear`, `/list`. Subscriptions are stored in MongoDB and cached in-memory. Messages are dispatched through buffered channels (`event` for broadcast, `send` for direct).
+Uses `github.com/go-telegram/bot` (v1.20.0) with a default handler pattern (`handleUpdate`). Commands: `/start`, `/stop`, `/test`, `/invite`, `/clear`, `/list`. The bot runs via `bot.Start(ctx)` in a goroutine; shutdown is via context cancellation. Subscriptions are stored in MongoDB and cached in-memory (`map[int64]entity.Subscription`, mutex-protected). Messages are dispatched through buffered channels (`event` for broadcast, `send` for direct). MarkdownV2 escaping uses `bot.EscapeMarkdown()`.
 
 ### Auth flow
 

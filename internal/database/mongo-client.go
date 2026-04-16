@@ -112,7 +112,7 @@ func (m *MongoDB) GetSubscriptions() ([]entity.Subscription, error) {
 }
 
 // GetSubscription returns a subscription by user id
-func (m *MongoDB) GetSubscription(id int) (*entity.Subscription, error) {
+func (m *MongoDB) GetSubscription(id int64) (*entity.Subscription, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
 
