@@ -92,6 +92,7 @@ func Create(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		}
 
 		log.Info("user created", slog.String("username", user.Username))
+		user.Token = ""
 		render.Status(r, http.StatusCreated)
 		render.JSON(w, r, response.Ok(user))
 	}
@@ -124,6 +125,7 @@ func Update(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		}
 
 		log.Info("user updated")
+		user.Token = ""
 		render.JSON(w, r, response.Ok(user))
 	}
 }

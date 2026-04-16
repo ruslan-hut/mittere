@@ -12,22 +12,22 @@ import (
 )
 
 type Repository interface {
-	GetSubscriptions() ([]entity.Subscription, error)
-	GetSubscription(id int64) (*entity.Subscription, error)
-	UpdateSubscription(subscription *entity.Subscription) error
+	GetUsers() ([]entity.User, error)
+	GetUserByTelegramID(id int64) (*entity.User, error)
+	UpsertUser(user *entity.User) error
 }
 
 // TgBot implements EventHandler
 type TgBot struct {
-	mu            sync.RWMutex
-	bot           *bot.Bot
-	cancel        context.CancelFunc
-	database      Repository
-	subscriptions map[int64]entity.Subscription
-	invites       []string
-	event         chan MessageContent
-	send          chan MessageContent
-	log           *slog.Logger
+	mu     sync.RWMutex
+	bot    *bot.Bot
+	cancel context.CancelFunc
+	database   Repository
+	users      map[int64]entity.User
+	invites    []string
+	event      chan MessageContent
+	send       chan MessageContent
+	log        *slog.Logger
 }
 
 type MessageContent struct {
@@ -39,10 +39,10 @@ type MessageContent struct {
 
 func New(apiKey string, log *slog.Logger) (*TgBot, error) {
 	tgBot := &TgBot{
-		subscriptions: make(map[int64]entity.Subscription),
-		event:         make(chan MessageContent, 100),
-		send:          make(chan MessageContent, 100),
-		log:           log.With(sl.Module("telegram")),
+		users:   make(map[int64]entity.User),
+		event:   make(chan MessageContent, 100),
+		send:    make(chan MessageContent, 100),
+		log:     log.With(sl.Module("telegram")),
 	}
 
 	opts := []bot.Option{
@@ -63,18 +63,20 @@ func (b *TgBot) SetDatabase(database Repository) {
 }
 
 func (b *TgBot) Start() {
-	b.subscriptions = make(map[int64]entity.Subscription)
+	b.users = make(map[int64]entity.User)
 	if b.database != nil {
-		subscriptions, err := b.database.GetSubscriptions()
+		users, err := b.database.GetUsers()
 		if err != nil {
-			b.log.Error("getting subscriptions", sl.Err(err))
+			b.log.Error("getting users", sl.Err(err))
 		}
-		if subscriptions != nil {
-			for _, subscription := range subscriptions {
-				b.subscriptions[subscription.UserID] = subscription
+		if users != nil {
+			for _, user := range users {
+				if user.UserID != 0 {
+					b.users[user.UserID] = user
+				}
 			}
 		}
-		b.log.With(slog.Int("count", len(b.subscriptions))).Info("subscriptions loaded")
+		b.log.With(slog.Int("count", len(b.users))).Info("telegram users loaded")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,7 +106,7 @@ func (b *TgBot) handleUpdate(_ context.Context, _ *bot.Bot, update *models.Updat
 	cmd := extractCommand(update.Message.Text)
 	if cmd == "" {
 		if b.checkInviteCode(update.Message.Text) {
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.confirmSubscription(update)}
+			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.confirmUser(update)}
 		}
 		return
 	}
@@ -138,7 +140,7 @@ func (b *TgBot) handleUpdate(_ context.Context, _ *bot.Bot, update *models.Updat
 			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 		}
 	case "stop":
-		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.deleteSubscription(update)}
+		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.unsubscribe(update)}
 	case "test":
 		msg := fmt.Sprintf("*%v*: `%v`\n %v", "MONITOR", "Warn", "This is a test notification, relax")
 		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
@@ -151,23 +153,23 @@ func (b *TgBot) handleUpdate(_ context.Context, _ *bot.Bot, update *models.Updat
 func (b *TgBot) eventPump() {
 	for event := range b.event {
 		b.mu.RLock()
-		recipients := make([]int64, 0, len(b.subscriptions))
-		for _, sub := range b.subscriptions {
-			if !sub.IsActive() {
+		recipients := make([]int64, 0, len(b.users))
+		for _, user := range b.users {
+			if !user.IsActive() {
 				continue
 			}
 			// username targeting: deliver only to the specified user
 			if event.Username != "" {
-				if sub.User == event.Username {
-					recipients = append(recipients, sub.UserID)
+				if user.Username == event.Username {
+					recipients = append(recipients, user.UserID)
 				}
 				continue
 			}
 			// role filtering: "admin" messages go to admins only, others go to everyone
-			if event.Role == entity.RoleAdmin && !sub.IsAdmin() {
+			if event.Role == entity.RoleAdmin && !user.IsAdmin() {
 				continue
 			}
-			recipients = append(recipients, sub.UserID)
+			recipients = append(recipients, user.UserID)
 		}
 		b.mu.RUnlock()
 		for _, chatID := range recipients {

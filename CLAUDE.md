@@ -41,8 +41,8 @@ impl/telegram/               — Telegram bot (long-polling updates, subscriptio
 internal/http-server/api/    — chi router setup, middleware wiring, route registration
 internal/http-server/handlers/ — HTTP handler functions (service test endpoints, telegram notify)
 internal/http-server/middleware/ — authenticate (Bearer token) and timeout middleware
-internal/database/           — MongoDB client (users, subscriptions collections)
-entity/                      — domain types: User, Subscription, EventMessage
+internal/database/           — MongoDB client (single "subscriptions" collection)
+entity/                      — domain types: User, EventMessage
 internal/lib/                — small utilities: logger, validator, response helpers, context helpers
 ```
 
@@ -68,7 +68,7 @@ All routes require `Authorization: Bearer <token>` header. Routes defined in `ap
 
 ### Telegram bot
 
-Uses `github.com/go-telegram/bot` (v1.20.0) with a default handler pattern (`handleUpdate`). Commands: `/start`, `/stop`, `/test`, `/invite`, `/clear`, `/list`. The bot runs via `bot.Start(ctx)` in a goroutine; shutdown is via context cancellation. Subscriptions are stored in MongoDB and cached in-memory (`map[int64]entity.Subscription`, mutex-protected). Messages are dispatched through buffered channels (`event` for broadcast, `send` for direct). MarkdownV2 escaping uses `bot.EscapeMarkdown()`.
+Uses `github.com/go-telegram/bot` (v1.20.0) with a default handler pattern (`handleUpdate`). Commands: `/start`, `/stop`, `/test`, `/invite`, `/clear`, `/list`. The bot runs via `bot.Start(ctx)` in a goroutine; shutdown is via context cancellation. Users with Telegram IDs are cached in-memory (`map[int64]entity.User`, mutex-protected). Messages are dispatched through buffered channels (`event` for broadcast, `send` for direct) with role-based filtering. MarkdownV2 escaping uses `bot.EscapeMarkdown()`.
 
 ### Auth flow
 

@@ -9,7 +9,7 @@ import (
 )
 
 type Repository interface {
-	GetUser(token string) (*entity.User, error)
+	GetUserByToken(token string) (*entity.User, error)
 	GetUsers() ([]entity.User, error)
 	GetUserByUsername(username string) (*entity.User, error)
 	CreateUser(user *entity.User) error
@@ -100,12 +100,13 @@ func (c *Core) AuthenticateByToken(token string) (*entity.User, error) {
 		return &entity.User{
 			Username: "system",
 			Name:     "system",
+			Role:     entity.RoleAdmin,
 		}, nil
 	}
 	if c.repo == nil {
 		return nil, fmt.Errorf("repository not initialized")
 	}
-	user, err := c.repo.GetUser(token)
+	user, err := c.repo.GetUserByToken(token)
 	if err != nil {
 		c.log.With(sl.Secret("token", token)).Error("read user data", sl.Err(err))
 	}

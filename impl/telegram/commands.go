@@ -13,77 +13,60 @@ func (b *TgBot) subscribe(update *models.Update) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	sub := b.getSubscriptionLocked(userId)
-	if sub != nil {
-		if sub.IsActive() {
+	user := b.getUserLocked(userId)
+	if user != nil {
+		if user.IsActive() {
 			return "Already subscribed"
 		}
-		if sub.IsVerified {
-			sub.Confirm()
-			err := b.updateSubscriptionLocked(sub)
-			if err != nil {
+		if user.IsVerified {
+			user.Confirm()
+			if err := b.saveUserLocked(user); err != nil {
 				return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 			}
-			return fmt.Sprintf("Subscription is activated, enjoy")
+			return "Subscription is activated, enjoy"
 		}
 		return "Awaiting confirmation, send invite code"
 	}
 
-	subscription := entity.NewSubscription(userId, update.Message.From.Username)
-	err := b.updateSubscriptionLocked(&subscription)
-	if err != nil {
-		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
+	newUser := entity.NewUser(userId, update.Message.From.Username)
+	if err := b.saveUserLocked(&newUser); err != nil {
+		return fmt.Sprintf("Error registering:\n `%v`", err)
 	}
 	return fmt.Sprintf("Hello *%v*, you are registered\n To activate notifications, send invite code", update.Message.From.Username)
 }
 
-func (b *TgBot) confirmSubscription(update *models.Update) string {
+func (b *TgBot) confirmUser(update *models.Update) string {
 	userId := update.Message.From.ID
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	sub := b.getSubscriptionLocked(userId)
-	if sub == nil {
-		return "Subscription not found"
+	user := b.getUserLocked(userId)
+	if user == nil {
+		return "User not found"
 	}
-	sub.Confirm()
-	err := b.updateSubscriptionLocked(sub)
-	if err != nil {
-		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
+	user.Confirm()
+	if err := b.saveUserLocked(user); err != nil {
+		return fmt.Sprintf("Error confirming:\n `%v`", err)
 	}
-	return fmt.Sprintf("Subscription is activated, enjoy")
+	return "Subscription is activated, enjoy"
 }
 
-// updateSubscriptionLocked updates a subscription, with upsert option. Caller must hold b.mu.
-func (b *TgBot) updateSubscriptionLocked(subscription *entity.Subscription) error {
-	b.subscriptions[subscription.UserID] = *subscription
-	if b.database != nil {
-		err := b.database.UpdateSubscription(subscription)
-		if err != nil {
-			b.log.Error("updating subscription", sl.Err(err))
-			return fmt.Errorf("failed to update subscription")
-		}
-	}
-	return nil
-}
-
-func (b *TgBot) deleteSubscription(update *models.Update) string {
+func (b *TgBot) unsubscribe(update *models.Update) string {
 	userId := update.Message.From.ID
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	sub := b.getSubscriptionLocked(userId)
-	if sub == nil {
-		return "Subscription not found"
+	user := b.getUserLocked(userId)
+	if user == nil {
+		return "User not found"
 	}
-	sub.Disable()
-	err := b.updateSubscriptionLocked(sub)
-	if err != nil {
+	user.Disable()
+	if err := b.saveUserLocked(user); err != nil {
 		return fmt.Sprintf("Error disabling subscription:\n `%v`", err)
 	}
-	return fmt.Sprintf("Subscription deleted")
+	return "Subscription deleted"
 }
 
 func (b *TgBot) isAdmin(update *models.Update) bool {
@@ -92,28 +75,39 @@ func (b *TgBot) isAdmin(update *models.Update) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	sub := b.getSubscriptionLocked(userId)
-	if sub == nil {
+	user := b.getUserLocked(userId)
+	if user == nil {
 		return false
 	}
-	return sub.IsAdmin()
+	return user.IsAdmin()
 }
 
-// getSubscriptionLocked looks up a subscription by userId. Caller must hold b.mu (read or write).
-func (b *TgBot) getSubscriptionLocked(userId int64) *entity.Subscription {
-	if sub, ok := b.subscriptions[userId]; ok {
-		return &sub
-	}
-	// check in database
+// saveUserLocked persists a user to cache and database. Caller must hold b.mu.
+func (b *TgBot) saveUserLocked(user *entity.User) error {
+	b.users[user.UserID] = *user
 	if b.database != nil {
-		subscription, err := b.database.GetSubscription(userId)
+		if err := b.database.UpsertUser(user); err != nil {
+			b.log.Error("saving user", sl.Err(err))
+			return fmt.Errorf("failed to save user")
+		}
+	}
+	return nil
+}
+
+// getUserLocked looks up a user by Telegram ID. Caller must hold b.mu (read or write).
+func (b *TgBot) getUserLocked(userId int64) *entity.User {
+	if user, ok := b.users[userId]; ok {
+		return &user
+	}
+	if b.database != nil {
+		user, err := b.database.GetUserByTelegramID(userId)
 		if err != nil {
-			b.log.Error("getting subscription", sl.Err(err))
+			b.log.Error("getting user", sl.Err(err))
 			return nil
 		}
-		if subscription != nil {
-			b.subscriptions[userId] = *subscription
-			return subscription
+		if user != nil {
+			b.users[userId] = *user
+			return user
 		}
 	}
 	return nil

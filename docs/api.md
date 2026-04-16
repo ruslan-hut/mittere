@@ -119,7 +119,21 @@ curl http://127.0.0.1:9800/tg/test \
 
 ## Users
 
-Manage API users (authentication tokens).
+Manage users. A user can be API-only (with a token for HTTP auth), Telegram-only (with a `user_id` for receiving messages), or both. All users are stored in the `subscriptions` MongoDB collection.
+
+### User Model
+
+| Field               | Type   | Description                                         |
+|---------------------|--------|-----------------------------------------------------|
+| `username`          | string | Unique identifier (required)                        |
+| `user_id`           | int64  | Telegram user ID (0 if API-only)                    |
+| `name`              | string | Display name                                        |
+| `email`             | string | Email address                                       |
+| `token`             | string | API authentication token (redacted in responses)    |
+| `role`              | string | `"admin"` or `"user"`                               |
+| `state`             | string | `"await"`, `"active"`, or `"disabled"`              |
+| `is_verified`       | bool   | Whether invite code was confirmed                   |
+| `subscription_type` | string | Subscription category (default: `"status"`)         |
 
 ### List Users
 
@@ -144,7 +158,18 @@ curl http://127.0.0.1:9800/users/ \
     {
       "username": "ci-bot",
       "name": "CI Bot",
-      "email": "ci@example.com"
+      "email": "ci@example.com",
+      "role": "user",
+      "state": "active",
+      "is_verified": true
+    },
+    {
+      "user_id": 123456789,
+      "username": "johndoe",
+      "role": "admin",
+      "state": "active",
+      "is_verified": true,
+      "subscription_type": "status"
     }
   ],
   "success": true,
@@ -168,22 +193,7 @@ curl http://127.0.0.1:9800/users/ci-bot \
   -H "Authorization: Bearer <token>"
 ```
 
-**Response:** `200 OK`
-
-```json
-{
-  "data": {
-    "username": "ci-bot",
-    "name": "CI Bot",
-    "email": "ci@example.com"
-  },
-  "success": true,
-  "status_message": "Success",
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
-
-**Response:** `404 Not Found` if user doesn't exist.
+**Response:** `200 OK` / `404 Not Found`
 
 ### Create User
 
@@ -193,14 +203,17 @@ POST /users/
 
 **Request body:**
 
-| Field      | Type   | Required | Description           |
-|------------|--------|----------|-----------------------|
-| `username` | string | yes      | Unique username       |
-| `name`     | string | no       | Display name          |
-| `email`    | string | no       | Email address         |
-| `token`    | string | yes      | Authentication token  |
+| Field      | Type   | Required | Description                          |
+|------------|--------|----------|--------------------------------------|
+| `username` | string | yes      | Unique username                      |
+| `name`     | string | no       | Display name                         |
+| `email`    | string | no       | Email address                        |
+| `token`    | string | no       | API auth token (omit for TG-only)    |
+| `role`     | string | no       | `"admin"` or `"user"` (default)      |
+| `state`    | string | no       | `"active"`, `"await"`, `"disabled"`  |
+| `user_id`  | int64  | no       | Telegram user ID (omit for API-only) |
 
-**Example:**
+**Example — API-only user:**
 
 ```bash
 curl -X POST http://127.0.0.1:9800/users/ \
@@ -209,8 +222,9 @@ curl -X POST http://127.0.0.1:9800/users/ \
   -d '{
     "username": "ci-bot",
     "name": "CI Bot",
-    "email": "ci@example.com",
-    "token": "secret-token-for-ci-bot"
+    "token": "secret-token-for-ci-bot",
+    "role": "user",
+    "state": "active"
   }'
 ```
 
@@ -224,14 +238,6 @@ PUT /users/{username}
 
 Updates an existing user. The `username` path parameter takes precedence over any username in the body.
 
-**Request body:**
-
-| Field   | Type   | Required | Description          |
-|---------|--------|----------|----------------------|
-| `name`  | string | no       | Display name         |
-| `email` | string | no       | Email address        |
-| `token` | string | yes      | Authentication token |
-
 **Example:**
 
 ```bash
@@ -240,7 +246,7 @@ curl -X PUT http://127.0.0.1:9800/users/ci-bot \
   -H "Content-Type: application/json" \
   -d '{
     "name": "CI Bot Updated",
-    "token": "new-secret-token"
+    "role": "admin"
   }'
 ```
 
