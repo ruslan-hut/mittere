@@ -56,10 +56,15 @@ internal/lib/                — small utilities: logger, validator, response he
 
 All routes require `Authorization: Bearer <token>` header. Routes defined in `api/api.go`:
 
-| Method | Path     | Purpose                    |
-|--------|----------|----------------------------|
-| GET    | /tg/test | Send test Telegram event   |
-| POST   | /tg/msg  | Send Telegram notification |
+| Method | Path               | Purpose                    |
+|--------|--------------------|----------------------------|
+| GET    | /tg/test           | Send test Telegram event   |
+| POST   | /tg/msg            | Send Telegram notification |
+| GET    | /users/            | List all users             |
+| POST   | /users/            | Create a user              |
+| GET    | /users/{username}  | Get a user by username     |
+| PUT    | /users/{username}  | Update a user              |
+| DELETE | /users/{username}  | Delete a user              |
 
 ### Telegram bot
 

@@ -31,8 +31,10 @@ type TgBot struct {
 }
 
 type MessageContent struct {
-	ChatID int64
-	Text   string
+	ChatID   int64
+	Text     string
+	Role     string // target role: "admin" = admins only, "user" or "" = all active
+	Username string // if set, deliver only to this username
 }
 
 func New(apiKey string, log *slog.Logger) (*TgBot, error) {
@@ -145,18 +147,30 @@ func (b *TgBot) handleUpdate(_ context.Context, _ *bot.Bot, update *models.Updat
 	}
 }
 
-// eventPump sending events to all subscribers
+// eventPump sending events to subscribers filtered by role and username
 func (b *TgBot) eventPump() {
 	for event := range b.event {
 		b.mu.RLock()
-		active := make([]int64, 0, len(b.subscriptions))
-		for _, subscription := range b.subscriptions {
-			if subscription.IsActive() {
-				active = append(active, subscription.UserID)
+		recipients := make([]int64, 0, len(b.subscriptions))
+		for _, sub := range b.subscriptions {
+			if !sub.IsActive() {
+				continue
 			}
+			// username targeting: deliver only to the specified user
+			if event.Username != "" {
+				if sub.User == event.Username {
+					recipients = append(recipients, sub.UserID)
+				}
+				continue
+			}
+			// role filtering: "admin" messages go to admins only, others go to everyone
+			if event.Role == entity.RoleAdmin && !sub.IsAdmin() {
+				continue
+			}
+			recipients = append(recipients, sub.UserID)
 		}
 		b.mu.RUnlock()
-		for _, chatID := range active {
+		for _, chatID := range recipients {
 			b.sendMessage(chatID, event.Text)
 		}
 	}
@@ -204,6 +218,16 @@ func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
 		payload := fmt.Sprintf("%v\n", em.Payload)
 		msg += fmt.Sprintf("```\n%v\n```", bot.EscapeMarkdown(payload))
 	}
-	b.event <- MessageContent{Text: msg}
+
+	role := em.Role
+	if role == "" {
+		role = entity.RoleUser
+	}
+
+	b.event <- MessageContent{
+		Text:     msg,
+		Role:     role,
+		Username: em.Username,
+	}
 	return nil
 }

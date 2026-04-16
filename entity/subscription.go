@@ -2,7 +2,7 @@ package entity
 
 const (
 	RoleAdmin = "admin"
-	RoleGuest = "guest"
+	RoleUser  = "user"
 
 	StateAwait    = "await"
 	StateActive   = "active"
@@ -22,7 +22,7 @@ func NewSubscription(userId int64, user string) Subscription {
 	return Subscription{
 		UserID:           userId,
 		User:             user,
-		Role:             RoleGuest,
+		Role:             RoleUser,
 		State:            StateAwait,
 		SubscriptionType: "status",
 	}

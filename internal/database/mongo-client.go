@@ -94,6 +94,84 @@ func (m *MongoDB) GetUser(token string) (*entity.User, error) {
 	return user, nil
 }
 
+// GetUsers returns all users
+func (m *MongoDB) GetUsers() ([]entity.User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	cursor, err := m.collection(usersCollection).Find(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	var users []entity.User
+	if err = cursor.All(ctx, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// GetUserByUsername returns a user by username
+func (m *MongoDB) GetUserByUsername(username string) (*entity.User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	filter := bson.M{"username": username}
+	result := m.collection(usersCollection).FindOne(ctx, filter)
+	if result.Err() != nil {
+		return nil, m.findError(result.Err())
+	}
+	user := &entity.User{}
+	if err := result.Decode(user); err != nil {
+		return nil, fmt.Errorf("mongodb decode error: %w", err)
+	}
+	return user, nil
+}
+
+// CreateUser inserts a new user
+func (m *MongoDB) CreateUser(user *entity.User) error {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	_, err := m.collection(usersCollection).InsertOne(ctx, user)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// UpdateUser updates an existing user by username
+func (m *MongoDB) UpdateUser(user *entity.User) error {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	filter := bson.M{"username": user.Username}
+	update := bson.M{"$set": user}
+	result, err := m.collection(usersCollection).UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+// DeleteUser deletes a user by username
+func (m *MongoDB) DeleteUser(username string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	filter := bson.M{"username": username}
+	result, err := m.collection(usersCollection).DeleteOne(ctx, filter)
+	if err != nil {
+		return err
+	}
+	if result.DeletedCount == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
 // GetSubscriptions returns all subscriptions
 func (m *MongoDB) GetSubscriptions() ([]entity.Subscription, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
