@@ -7,6 +7,8 @@ import (
 	"reflect"
 )
 
+var v = validator.New()
+
 // Struct validates a single struct object
 func Struct(s interface{}) error {
 	if s == nil {
@@ -18,8 +20,7 @@ func Struct(s interface{}) error {
 	var validationErrors validator.ValidationErrors
 	var invalidValidationError *validator.InvalidValidationError
 
-	validate := validator.New()
-	err := validate.Struct(s)
+	err := v.Struct(s)
 	if err == nil {
 		return nil
 	}

@@ -50,16 +50,19 @@ func New(log *slog.Logger, auth Authenticate) func(next http.Handler) http.Handl
 				).Info("incoming request")
 			}()
 
-			token := ""
 			header := r.Header.Get("Authorization")
 			if len(header) == 0 {
 				logger = logger.With(sl.Err(fmt.Errorf("authorization header not found")))
 				authFailed(ww, r, "Authorization header not found")
 				return
 			}
-			if strings.Contains(header, "Bearer") {
-				token = strings.Split(header, " ")[1]
+			const bearerPrefix = "Bearer "
+			if !strings.HasPrefix(header, bearerPrefix) {
+				logger = logger.With(sl.Err(fmt.Errorf("invalid authorization header format")))
+				authFailed(ww, r, "Invalid authorization header")
+				return
 			}
+			token := strings.TrimPrefix(header, bearerPrefix)
 			if len(token) == 0 {
 				logger = logger.With(sl.Err(fmt.Errorf("token not found")))
 				authFailed(ww, r, "Token not found")

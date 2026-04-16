@@ -14,6 +14,7 @@ import (
 	"mittere/internal/lib/sl"
 	"net"
 	"net/http"
+	"time"
 )
 
 type Server struct {
@@ -40,13 +41,15 @@ func New(conf *config.Config, log *slog.Logger, handler Handler) error {
 	router.Use(middleware.RequestID)
 	router.Use(middleware.Recoverer)
 	router.Use(render.SetContentType(render.ContentTypeJSON))
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
+			next.ServeHTTP(w, r)
+		})
+	})
 
 	//router.Use(logger.New(log))
 	router.Use(authenticate.New(log, handler))
-
-	router.Route("/mail", func(r chi.Router) {
-		r.Post("/test", service.SendTestMail(log, handler))
-	})
 
 	router.Route("/tg", func(r chi.Router) {
 		r.Get("/test", service.SendTestEvent(log, handler))
@@ -55,8 +58,13 @@ func New(conf *config.Config, log *slog.Logger, handler Handler) error {
 
 	httpLog := slog.NewLogLogger(log.Handler(), slog.LevelError)
 	server.httpServer = &http.Server{
-		Handler:  router,
-		ErrorLog: httpLog,
+		Handler:           router,
+		ErrorLog:          httpLog,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
 	serverAddress := fmt.Sprintf("%s:%s", conf.Listen.BindIP, conf.Listen.Port)

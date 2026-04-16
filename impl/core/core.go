@@ -1,6 +1,7 @@
 package core
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"mittere/entity"
@@ -37,10 +38,6 @@ func (c *Core) SetToken(token string) {
 	c.token = token
 }
 
-func (c *Core) SendMail(_ *entity.MailMessage) (interface{}, error) {
-	return nil, nil
-}
-
 func (c *Core) SendEvent(message *entity.EventMessage) (interface{}, error) {
 	if c.ms == nil {
 		return nil, fmt.Errorf("not set MessageService")
@@ -59,7 +56,7 @@ func (c *Core) AuthenticateByToken(token string) (*entity.User, error) {
 	if token == "" {
 		return nil, fmt.Errorf("token not provided")
 	}
-	if c.token != "" && c.token == token {
+	if c.token != "" && subtle.ConstantTimeCompare([]byte(c.token), []byte(token)) == 1 {
 		return &entity.User{
 			Username: "system",
 			Name:     "system",

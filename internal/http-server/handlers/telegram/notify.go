@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"fmt"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/render"
 	"log/slog"
@@ -30,8 +29,8 @@ func SendMessage(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		var message entity.EventMessage
 		if err := render.Bind(r, &message); err != nil {
 			log.Error("bind message", sl.Err(err))
-			render.Status(r, 400)
-			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to decode: %v", err)))
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, response.Error("Failed to decode request"))
 			return
 		}
 
@@ -44,8 +43,8 @@ func SendMessage(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		data, err := handler.Notify(&message)
 		if err != nil {
 			log.Error("send notification", sl.Err(err))
-			render.Status(r, 204)
-			render.JSON(w, r, response.Error(fmt.Sprintf("Failed to send notification: %v", err)))
+			render.Status(r, http.StatusInternalServerError)
+			render.JSON(w, r, response.Error("Failed to send notification"))
 			return
 		}
 		log.Info("notification sent")

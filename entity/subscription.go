@@ -1,5 +1,14 @@
 package entity
 
+const (
+	RoleAdmin = "admin"
+	RoleGuest = "guest"
+
+	StateAwait    = "await"
+	StateActive   = "active"
+	StateDisabled = "disabled"
+)
+
 type Subscription struct {
 	UserID           int    `json:"user_id" bson:"user_id"`
 	User             string `json:"user" bson:"user"`
@@ -13,25 +22,25 @@ func NewSubscription(userId int, user string) Subscription {
 	return Subscription{
 		UserID:           userId,
 		User:             user,
-		Role:             "guest",
-		State:            "await",
+		Role:             RoleGuest,
+		State:            StateAwait,
 		SubscriptionType: "status",
 	}
 }
 
 func (s *Subscription) Confirm() {
-	s.State = "active"
+	s.State = StateActive
 	s.IsVerified = true
 }
 
 func (s *Subscription) Disable() {
-	s.State = "disabled"
+	s.State = StateDisabled
 }
 
 func (s *Subscription) IsAdmin() bool {
-	return s.Role == "admin"
+	return s.Role == RoleAdmin
 }
 
 func (s *Subscription) IsActive() bool {
-	return s.State == "active"
+	return s.State == StateActive
 }

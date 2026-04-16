@@ -29,6 +29,11 @@ func main() {
 		lg.Error("mongo client", sl.Err(err))
 	}
 	if mongo != nil {
+		defer func() {
+			if err := mongo.Close(); err != nil {
+				lg.Error("mongo disconnect", sl.Err(err))
+			}
+		}()
 		lg.Info("mongo client initialized",
 			slog.String("host", conf.Mongo.Host),
 			slog.String("port", conf.Mongo.Port),

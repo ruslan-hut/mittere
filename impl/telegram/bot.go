@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"mittere/entity"
 	"mittere/internal/lib/sl"
+	"sync"
 )
 
 type Repository interface {
@@ -16,12 +17,14 @@ type Repository interface {
 
 // TgBot implements EventHandler
 type TgBot struct {
+	mu            sync.RWMutex
 	api           *tgbotapi.BotAPI
 	database      Repository
 	subscriptions map[int]entity.Subscription
 	invites       []string
 	event         chan MessageContent
 	send          chan MessageContent
+	done          chan struct{}
 	log           *slog.Logger
 }
 
@@ -35,6 +38,7 @@ func New(apiKey string, log *slog.Logger) (*TgBot, error) {
 		subscriptions: make(map[int]entity.Subscription),
 		event:         make(chan MessageContent, 100),
 		send:          make(chan MessageContent, 100),
+		done:          make(chan struct{}),
 		log:           log.With(sl.Module("telegram")),
 	}
 	api, err := tgbotapi.NewBotAPI(apiKey)
@@ -70,7 +74,16 @@ func (b *TgBot) Start() {
 	go b.updatesPump()
 }
 
-// Start listening for updates
+// Stop gracefully shuts down the bot
+func (b *TgBot) Stop() {
+	b.api.StopReceivingUpdates()
+	close(b.done)
+	close(b.event)
+	close(b.send)
+	b.log.Info("telegram bot stopped")
+}
+
+// updatesPump listens for Telegram updates
 func (b *TgBot) updatesPump() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -95,20 +108,26 @@ func (b *TgBot) updatesPump() {
 		case "invite":
 			if b.isAdmin(&update) {
 				code := generatePinCode()
+				b.mu.Lock()
 				b.invites = append(b.invites, code)
+				b.mu.Unlock()
 				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: code}
 			}
 		case "clear":
 			if b.isAdmin(&update) {
+				b.mu.Lock()
 				b.invites = []string{}
+				b.mu.Unlock()
 				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Invite codes cleared"}
 			}
 		case "list":
 			if b.isAdmin(&update) {
+				b.mu.RLock()
 				msg := "Invite codes:\n"
 				for _, code := range b.invites {
 					msg += fmt.Sprintf("%v\n", code)
 				}
+				b.mu.RUnlock()
 				b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
 			}
 		case "stop":
@@ -124,23 +143,25 @@ func (b *TgBot) updatesPump() {
 
 // eventPump sending events to all subscribers
 func (b *TgBot) eventPump() {
-	for {
-		if event, ok := <-b.event; ok {
-			for _, subscription := range b.subscriptions {
-				if subscription.IsActive() {
-					b.sendMessage(int64(subscription.UserID), event.Text)
-				}
+	for event := range b.event {
+		b.mu.RLock()
+		active := make([]int64, 0, len(b.subscriptions))
+		for _, subscription := range b.subscriptions {
+			if subscription.IsActive() {
+				active = append(active, int64(subscription.UserID))
 			}
+		}
+		b.mu.RUnlock()
+		for _, chatID := range active {
+			b.sendMessage(chatID, event.Text)
 		}
 	}
 }
 
 // sendPump sending messages to users
 func (b *TgBot) sendPump() {
-	for {
-		if event, ok := <-b.send; ok {
-			go b.sendMessage(event.ChatID, event.Text)
-		}
+	for event := range b.send {
+		go b.sendMessage(event.ChatID, event.Text)
 	}
 }
 

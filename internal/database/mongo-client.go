@@ -9,17 +9,19 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"mittere/entity"
 	"mittere/internal/config"
+	"time"
 )
 
 const (
 	usersCollection         = "users"
 	subscriptionsCollection = "subscriptions"
+	connectTimeout          = 10 * time.Second
+	pingTimeout             = 5 * time.Second
 )
 
 type MongoDB struct {
-	ctx           context.Context
-	clientOptions *options.ClientOptions
-	database      string
+	client   *mongo.Client
+	database string
 }
 
 func NewMongoClient(conf *config.Config) (*MongoDB, error) {
@@ -35,24 +37,37 @@ func NewMongoClient(conf *config.Config) (*MongoDB, error) {
 			AuthSource: conf.Mongo.Database,
 		})
 	}
-	client := &MongoDB{
-		ctx:           context.Background(),
-		clientOptions: clientOptions,
-		database:      conf.Mongo.Database,
-	}
-	return client, nil
-}
 
-func (m *MongoDB) connect() (*mongo.Client, error) {
-	connection, err := mongo.Connect(m.ctx, m.clientOptions)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return nil, fmt.Errorf("mongodb connect error: %w", err)
 	}
-	return connection, nil
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer pingCancel()
+
+	if err = client.Ping(pingCtx, nil); err != nil {
+		_ = client.Disconnect(context.Background())
+		return nil, fmt.Errorf("mongodb ping error: %w", err)
+	}
+
+	return &MongoDB{
+		client:   client,
+		database: conf.Mongo.Database,
+	}, nil
 }
 
-func (m *MongoDB) disconnect(connection *mongo.Client) {
-	_ = connection.Disconnect(m.ctx)
+func (m *MongoDB) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	return m.client.Disconnect(ctx)
+}
+
+func (m *MongoDB) collection(name string) *mongo.Collection {
+	return m.client.Database(m.database).Collection(name)
 }
 
 func (m *MongoDB) findError(err error) error {
@@ -63,20 +78,16 @@ func (m *MongoDB) findError(err error) error {
 }
 
 func (m *MongoDB) GetUser(token string) (*entity.User, error) {
-	connection, err := m.connect()
-	if err != nil {
-		return nil, err
-	}
-	defer m.disconnect(connection)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
 
-	collection := connection.Database(m.database).Collection(usersCollection)
 	filter := bson.M{"token": token}
-	result := collection.FindOne(m.ctx, filter)
+	result := m.collection(usersCollection).FindOne(ctx, filter)
 	if result.Err() != nil {
 		return nil, m.findError(result.Err())
 	}
 	user := &entity.User{}
-	err = result.Decode(user)
+	err := result.Decode(user)
 	if err != nil {
 		return nil, fmt.Errorf("mongodb decode error: %w", err)
 	}
@@ -85,20 +96,16 @@ func (m *MongoDB) GetUser(token string) (*entity.User, error) {
 
 // GetSubscriptions returns all subscriptions
 func (m *MongoDB) GetSubscriptions() ([]entity.Subscription, error) {
-	connection, err := m.connect()
-	if err != nil {
-		return nil, err
-	}
-	defer m.disconnect(connection)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
 
 	filter := bson.D{}
-	collection := connection.Database(m.database).Collection(subscriptionsCollection)
-	cursor, err := collection.Find(m.ctx, filter)
+	cursor, err := m.collection(subscriptionsCollection).Find(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
 	var subscriptions []entity.Subscription
-	if err = cursor.All(m.ctx, &subscriptions); err != nil {
+	if err = cursor.All(ctx, &subscriptions); err != nil {
 		return nil, err
 	}
 	return subscriptions, nil
@@ -106,16 +113,12 @@ func (m *MongoDB) GetSubscriptions() ([]entity.Subscription, error) {
 
 // GetSubscription returns a subscription by user id
 func (m *MongoDB) GetSubscription(id int) (*entity.Subscription, error) {
-	connection, err := m.connect()
-	if err != nil {
-		return nil, err
-	}
-	defer m.disconnect(connection)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
 
-	filter := bson.D{{"user_id", id}}
-	collection := connection.Database(m.database).Collection(subscriptionsCollection)
+	filter := bson.D{{Key: "user_id", Value: id}}
 	var subscription entity.Subscription
-	err = collection.FindOne(m.ctx, filter).Decode(&subscription)
+	err := m.collection(subscriptionsCollection).FindOne(ctx, filter).Decode(&subscription)
 	if err != nil {
 		return nil, err
 	}
@@ -124,16 +127,12 @@ func (m *MongoDB) GetSubscription(id int) (*entity.Subscription, error) {
 
 // UpdateSubscription updates a subscription
 func (m *MongoDB) UpdateSubscription(subscription *entity.Subscription) error {
-	connection, err := m.connect()
-	if err != nil {
-		return err
-	}
-	defer m.disconnect(connection)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
 
-	filter := bson.D{{"user_id", subscription.UserID}}
+	filter := bson.D{{Key: "user_id", Value: subscription.UserID}}
 	update := bson.M{"$set": subscription}
-	collection := connection.Database(m.database).Collection(subscriptionsCollection)
-	_, err = collection.UpdateOne(m.ctx, filter, update, options.Update().SetUpsert(true))
+	_, err := m.collection(subscriptionsCollection).UpdateOne(ctx, filter, update, options.Update().SetUpsert(true))
 	if err != nil {
 		return err
 	}

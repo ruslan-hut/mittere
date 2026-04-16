@@ -1,7 +1,6 @@
 package sl
 
 import (
-	"fmt"
 	"log/slog"
 )
 
@@ -12,15 +11,11 @@ func Err(err error) slog.Attr {
 	}
 }
 
-// Secret returns a string with the first 5 characters of the input string
-// used to hide sensitive information in logs
+// Secret redacts sensitive values in logs
 func Secret(key, value string) slog.Attr {
-	r := "***"
-	if len(value) > 5 {
-		r = fmt.Sprintf("%s***", value[0:5])
-	}
+	r := "[REDACTED]"
 	if value == "" {
-		r = "?"
+		r = "[EMPTY]"
 	}
 	return slog.Attr{
 		Key:   key,

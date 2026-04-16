@@ -10,14 +10,17 @@ import (
 func (b *TgBot) subscribe(update *tgbotapi.Update) string {
 	userId := update.Message.From.ID
 
-	sub := b.getSubscription(userId)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	sub := b.getSubscriptionLocked(userId)
 	if sub != nil {
 		if sub.IsActive() {
 			return "Already subscribed"
 		}
 		if sub.IsVerified {
 			sub.Confirm()
-			err := b.updateSubscription(sub)
+			err := b.updateSubscriptionLocked(sub)
 			if err != nil {
 				return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 			}
@@ -27,7 +30,7 @@ func (b *TgBot) subscribe(update *tgbotapi.Update) string {
 	}
 
 	subscription := entity.NewSubscription(userId, update.Message.From.UserName)
-	err := b.updateSubscription(&subscription)
+	err := b.updateSubscriptionLocked(&subscription)
 	if err != nil {
 		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 	}
@@ -36,20 +39,24 @@ func (b *TgBot) subscribe(update *tgbotapi.Update) string {
 
 func (b *TgBot) confirmSubscription(update *tgbotapi.Update) string {
 	userId := update.Message.From.ID
-	subscription := b.subscriptions[userId]
-	if b.getSubscription(userId) == nil {
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	sub := b.getSubscriptionLocked(userId)
+	if sub == nil {
 		return "Subscription not found"
 	}
-	subscription.Confirm()
-	err := b.updateSubscription(&subscription)
+	sub.Confirm()
+	err := b.updateSubscriptionLocked(sub)
 	if err != nil {
 		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
 	}
 	return fmt.Sprintf("Subscription is activated, enjoy")
 }
 
-// updateSubscription updates a subscription, with upsert option
-func (b *TgBot) updateSubscription(subscription *entity.Subscription) error {
+// updateSubscriptionLocked updates a subscription, with upsert option. Caller must hold b.mu.
+func (b *TgBot) updateSubscriptionLocked(subscription *entity.Subscription) error {
 	b.subscriptions[subscription.UserID] = *subscription
 	if b.database != nil {
 		err := b.database.UpdateSubscription(subscription)
@@ -63,32 +70,39 @@ func (b *TgBot) updateSubscription(subscription *entity.Subscription) error {
 
 func (b *TgBot) deleteSubscription(update *tgbotapi.Update) string {
 	userId := update.Message.From.ID
-	subscription := b.subscriptions[userId]
-	if b.getSubscription(userId) == nil {
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	sub := b.getSubscriptionLocked(userId)
+	if sub == nil {
 		return "Subscription not found"
 	}
-	subscription.Disable()
-	err := b.updateSubscription(&subscription)
+	sub.Disable()
+	err := b.updateSubscriptionLocked(sub)
 	if err != nil {
-		return fmt.Sprintf("Error confirming subscription:\n `%v`", err)
+		return fmt.Sprintf("Error disabling subscription:\n `%v`", err)
 	}
 	return fmt.Sprintf("Subscription deleted")
 }
 
 func (b *TgBot) isAdmin(update *tgbotapi.Update) bool {
 	userId := update.Message.From.ID
-	subscription := b.subscriptions[userId]
-	if b.getSubscription(userId) == nil {
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	sub := b.getSubscriptionLocked(userId)
+	if sub == nil {
 		return false
 	}
-	return subscription.IsAdmin()
+	return sub.IsAdmin()
 }
 
-func (b *TgBot) getSubscription(userId int) *entity.Subscription {
-	for _, subscription := range b.subscriptions {
-		if subscription.UserID == userId {
-			return &subscription
-		}
+// getSubscriptionLocked looks up a subscription by userId. Caller must hold b.mu (read or write).
+func (b *TgBot) getSubscriptionLocked(userId int) *entity.Subscription {
+	if sub, ok := b.subscriptions[userId]; ok {
+		return &sub
 	}
 	// check in database
 	if b.database != nil {
@@ -106,9 +120,11 @@ func (b *TgBot) getSubscription(userId int) *entity.Subscription {
 }
 
 func (b *TgBot) checkInviteCode(code string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	for i, invite := range b.invites {
 		if invite == code {
-			// Remove the invite code from the slice
 			b.invites = append(b.invites[:i], b.invites[i+1:]...)
 			return true
 		}
