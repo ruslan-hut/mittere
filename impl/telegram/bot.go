@@ -214,7 +214,7 @@ func (b *TgBot) sendMessage(id int64, text string) {
 func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
 	msg := fmt.Sprintf("*%v*: `#%v`\n", em.Type, em.Subject)
 	if em.Text != "" {
-		msg += fmt.Sprintf("%v\n", bot.EscapeMarkdown(em.Text))
+		msg += fmt.Sprintf("%v\n", escapeText(em.Text))
 	}
 	if em.Payload != nil {
 		payload := fmt.Sprintf("%v\n", em.Payload)

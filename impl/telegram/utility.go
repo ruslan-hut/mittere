@@ -20,6 +20,18 @@ func removeMarkup(input string) string {
 	return sanitized
 }
 
+// escapeText escapes legacy Markdown symbols that break parsing, keeping '*' so senders can mark bold text.
+func escapeText(input string) string {
+	var sb strings.Builder
+	for _, char := range input {
+		if strings.ContainsRune("_`[", char) {
+			sb.WriteRune('\\')
+		}
+		sb.WriteRune(char)
+	}
+	return sb.String()
+}
+
 func extractCommand(text string) string {
 	if len(text) == 0 || text[0] != '/' {
 		return ""
