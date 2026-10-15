@@ -218,7 +218,7 @@ func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
 	}
 	if em.Payload != nil {
 		payload := fmt.Sprintf("%v\n", em.Payload)
-		msg += fmt.Sprintf("```\n%v\n```", bot.EscapeMarkdown(payload))
+		msg += fmt.Sprintf("```\n%v\n```", escapeCode(payload))
 	}
 
 	role := em.Role

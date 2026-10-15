@@ -20,11 +20,12 @@ func removeMarkup(input string) string {
 	return sanitized
 }
 
-// escapeText escapes legacy Markdown symbols that break parsing, keeping '*' so senders can mark bold text.
+// escapeText escapes MarkdownV2 reserved symbols (models.ParseModeMarkdown is MarkdownV2),
+// keeping '*' so senders can mark bold text.
 func escapeText(input string) string {
 	var sb strings.Builder
 	for _, char := range input {
-		if strings.ContainsRune("_`[", char) {
+		if strings.ContainsRune("\\_[]()~`>#+-=|{}.!", char) {
 			sb.WriteRune('\\')
 		}
 		sb.WriteRune(char)
@@ -49,4 +50,16 @@ func generatePinCode() string {
 		return "000000"
 	}
 	return fmt.Sprintf("%06d", n.Int64())
+}
+
+// escapeCode escapes symbols that MarkdownV2 reserves inside pre and code entities.
+func escapeCode(input string) string {
+	var sb strings.Builder
+	for _, char := range input {
+		if char == '\\' || char == '`' {
+			sb.WriteRune('\\')
+		}
+		sb.WriteRune(char)
+	}
+	return sb.String()
 }
