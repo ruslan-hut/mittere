@@ -6,6 +6,12 @@ on:
   push:
     branches:
       - v2
+    # a change to the documentation must not restart the service
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+      - 'image/**'
   workflow_dispatch:
 
 jobs:
