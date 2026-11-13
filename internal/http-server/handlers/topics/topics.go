@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/render"
 	"log/slog"
 	"mittere/entity"
+	"mittere/internal/http-server/handlers"
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
 	"net/http"
@@ -68,7 +69,7 @@ func Create(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		}
 		if err := handler.CreateTopic(&topic); err != nil {
 			log(logger, r).Error("create topic", sl.Err(err))
-			render.Status(r, http.StatusBadRequest)
+			render.Status(r, handlers.Status(err, http.StatusBadRequest))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}
@@ -90,7 +91,7 @@ func Update(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		topic.Code = code
 		if err := handler.UpdateTopic(&topic); err != nil {
 			log(logger, r).Error("update topic", sl.Err(err))
-			render.Status(r, http.StatusNotFound)
+			render.Status(r, handlers.Status(err, http.StatusInternalServerError))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}
@@ -103,7 +104,7 @@ func Delete(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		code := chi.URLParam(r, "code")
 		if err := handler.DeleteTopic(code); err != nil {
 			log(logger, r).Error("delete topic", sl.Err(err))
-			render.Status(r, http.StatusBadRequest)
+			render.Status(r, handlers.Status(err, http.StatusBadRequest))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}

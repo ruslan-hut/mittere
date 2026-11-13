@@ -39,18 +39,25 @@ func (m *MongoDB) Migrate(ctx context.Context) (*MigrationReport, error) {
 		return report, nil
 	}
 
-	users, err := m.legacyUsers(ctx)
+	raw, err := m.legacyDocuments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	users, err := decodeUsers(raw)
 	if err != nil {
 		return nil, err
 	}
 	report.Users = len(users)
 
-	if len(users) > 0 {
-		backup := make([]interface{}, 0, len(users))
-		for _, user := range users {
-			backup = append(backup, user)
+	if len(raw) > 0 {
+		// the documents are copied as they are, identifier included, so the
+		// copy is faithful and a repeated run does not pile up duplicates
+		backup := make([]interface{}, 0, len(raw))
+		for _, doc := range raw {
+			backup = append(backup, doc)
 		}
-		if _, err = m.collection(legacyUsersCollection).InsertMany(ctx, backup); err != nil {
+		opts := options.InsertMany().SetOrdered(false)
+		if _, err = m.collection(legacyUsersCollection).InsertMany(ctx, backup, opts); err != nil && !mongo.IsDuplicateKeyError(err) {
 			return nil, fmt.Errorf("backup of v1 users: %w", err)
 		}
 	}
@@ -70,10 +77,10 @@ func (m *MongoDB) Migrate(ctx context.Context) (*MigrationReport, error) {
 			sender := entity.NewSender(user.Username, scope)
 			sender.Name = user.Name
 			sender.Token = user.Token
-			sender.State = user.State
-			if sender.State == "" {
-				sender.State = entity.StateActive
-			}
+			// v1 authenticated a token whatever the state of its user, and
+			// state there meant the Telegram subscription; a migrated sender
+			// stays active so nothing that worked yesterday gets a 401 today
+			sender.State = entity.StateActive
 			sender.CreatedAt = now
 			senders = append(senders, sender)
 		}
@@ -137,19 +144,20 @@ func (m *MongoDB) Migrate(ctx context.Context) (*MigrationReport, error) {
 		report.Senders++
 	}
 
-	// the v1 documents share the "subscriptions" collection with the v2
-	// topic-to-channel links, so they are cleared before the links go in
-	if len(users) > 0 {
-		if _, err = m.collection(subscriptionsCollection).DeleteMany(ctx, legacyUserFilter()); err != nil {
-			return nil, fmt.Errorf("clearing v1 users: %w", err)
-		}
-	}
-
+	// the links go in first and the v1 documents, which share this collection,
+	// are cleared last: a crash in between leaves the v1 documents in place,
+	// so the next run rebuilds everything instead of finding nothing
 	for i := range subs {
 		if err = m.Subscribe(&subs[i]); err != nil {
 			return nil, fmt.Errorf("subscription %s: %w", subs[i].ChannelID, err)
 		}
 		report.Subscriptions++
+	}
+
+	if len(users) > 0 {
+		if _, err = m.collection(subscriptionsCollection).DeleteMany(ctx, legacyUserFilter()); err != nil {
+			return nil, fmt.Errorf("clearing v1 users: %w", err)
+		}
 	}
 
 	if err = m.markMigration(ctx, migrationV2, report); err != nil {
@@ -174,14 +182,26 @@ func legacyUserFilter() bson.M {
 	return bson.M{"username": bson.M{"$exists": true}, "topic_code": bson.M{"$exists": false}}
 }
 
-func (m *MongoDB) legacyUsers(ctx context.Context) ([]entity.User, error) {
+func (m *MongoDB) legacyDocuments(ctx context.Context) ([]bson.Raw, error) {
 	cursor, err := m.collection(subscriptionsCollection).Find(ctx, legacyUserFilter())
 	if err != nil {
 		return nil, err
 	}
-	users := make([]entity.User, 0)
-	if err = cursor.All(ctx, &users); err != nil {
+	docs := make([]bson.Raw, 0)
+	if err = cursor.All(ctx, &docs); err != nil {
 		return nil, err
+	}
+	return docs, nil
+}
+
+func decodeUsers(docs []bson.Raw) ([]entity.User, error) {
+	users := make([]entity.User, 0, len(docs))
+	for _, doc := range docs {
+		user := entity.User{}
+		if err := bson.Unmarshal(doc, &user); err != nil {
+			return nil, fmt.Errorf("reading a v1 user: %w", err)
+		}
+		users = append(users, user)
 	}
 	return users, nil
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"mittere/entity"
 	"mittere/impl/core"
+	"mittere/internal/http-server/handlers"
 	"mittere/internal/lib/api/cont"
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
@@ -146,7 +147,7 @@ func statusForError(err error) int {
 	case errors.Is(err, core.ErrForbidden):
 		return http.StatusForbidden
 	default:
-		return http.StatusInternalServerError
+		return handlers.Status(err, http.StatusInternalServerError)
 	}
 }
 
@@ -156,6 +157,8 @@ func messageForError(err error) string {
 		return err.Error()
 	case errors.Is(err, core.ErrForbidden):
 		return "Topic is not allowed for this token"
+	case errors.Is(err, core.ErrInProgress):
+		return "The same message is already being delivered"
 	default:
 		return "Failed to send notification"
 	}

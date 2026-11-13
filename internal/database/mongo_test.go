@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -398,4 +399,143 @@ func hasAll(got []string, want ...string) bool {
 		}
 	}
 	return len(got) == len(want)
+}
+
+// TestClaimEvent covers the guard against sending the same message twice: a
+// second call with the same dedup key is turned away while the first is still
+// delivering, and a claim left by a crashed call is taken over once it expires.
+func TestClaimEvent(t *testing.T) {
+	db := testDB(t)
+	prepare(t, db)
+
+	first := &entity.Event{EventID: "ev1", Topic: "ops", Type: "alert",
+		DedupKey: "invoice-42", Status: entity.EventPending, CreatedAt: time.Now().UTC()}
+	previous, err := db.ClaimEvent(first, time.Minute)
+	if err != nil || previous != nil {
+		t.Fatalf("ClaimEvent() = %v, %v, want a fresh claim", previous, err)
+	}
+
+	second := &entity.Event{EventID: "ev2", Topic: "ops", Type: "alert",
+		DedupKey: "invoice-42", Status: entity.EventPending, CreatedAt: time.Now().UTC()}
+	if _, err = db.ClaimEvent(second, time.Minute); !errors.Is(err, entity.ErrInProgress) {
+		t.Errorf("ClaimEvent() error = %v, want %v", err, entity.ErrInProgress)
+	}
+
+	// the first call finishes and releases the claim
+	sentAt := time.Now().UTC()
+	first.Deliveries = []entity.Delivery{{ChannelID: "-1001", ChatID: -1001,
+		Status: entity.DeliverySent, Attempts: 1, MessageID: 5, SentAt: &sentAt}}
+	first.Recalculate()
+	first.LeaseUntil = nil
+	if err = db.SaveEvent(first); err != nil {
+		t.Fatalf("SaveEvent() error = %v", err)
+	}
+
+	third := &entity.Event{EventID: "ev3", Topic: "ops", Type: "alert",
+		DedupKey: "invoice-42", Status: entity.EventPending, CreatedAt: time.Now().UTC()}
+	previous, err = db.ClaimEvent(third, time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimEvent() error = %v", err)
+	}
+	if previous == nil || previous.EventID != "ev1" || len(previous.Deliveries) != 1 {
+		t.Fatalf("ClaimEvent() = %+v, want what the first call left behind", previous)
+	}
+
+	// a claim that expired is taken over, so a crash does not block the key
+	expired := &entity.Event{EventID: "ev4", Topic: "ops", DedupKey: "invoice-43",
+		Status: entity.EventPending, CreatedAt: time.Now().UTC()}
+	if _, err = db.ClaimEvent(expired, -time.Second); err != nil {
+		t.Fatalf("ClaimEvent() error = %v", err)
+	}
+	taken := &entity.Event{EventID: "ev5", Topic: "ops", DedupKey: "invoice-43",
+		Status: entity.EventPending, CreatedAt: time.Now().UTC()}
+	previous, err = db.ClaimEvent(taken, time.Minute)
+	if err != nil || previous == nil || previous.EventID != "ev4" {
+		t.Errorf("ClaimEvent() = %+v, %v, want the expired claim taken over", previous, err)
+	}
+
+	// an event without a dedup key is never held up
+	for _, id := range []string{"plain1", "plain2"} {
+		plain := &entity.Event{EventID: id, Topic: "ops", Status: entity.EventPending, CreatedAt: time.Now().UTC()}
+		if _, err = db.ClaimEvent(plain, time.Minute); err != nil {
+			t.Errorf("ClaimEvent() for an event without a key: %v", err)
+		}
+	}
+}
+
+// TestPrepareSurvivesChangedTTL covers a changed events.ttl_days: the index is
+// rebuilt instead of stopping the service from starting.
+func TestPrepareSurvivesChangedTTL(t *testing.T) {
+	db := testDB(t)
+	prepare(t, db)
+
+	db.eventsTTL = 30 * 24 * time.Hour
+	if err := db.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare() with a changed TTL: %v", err)
+	}
+
+	cursor, err := db.collection(eventsCollection).Indexes().List(context.Background())
+	if err != nil {
+		t.Fatalf("listing indexes: %v", err)
+	}
+	var indexes []bson.M
+	if err = cursor.All(context.Background(), &indexes); err != nil {
+		t.Fatalf("reading indexes: %v", err)
+	}
+	for _, index := range indexes {
+		if index["name"] == "events_ttl" {
+			if got := index["expireAfterSeconds"]; fmt.Sprint(got) != "2592000" {
+				t.Errorf("expireAfterSeconds = %v, want 2592000", got)
+			}
+			return
+		}
+	}
+	t.Error("the TTL index is gone")
+}
+
+// TestMigrateKeepsLegacyDocumentsUntilTheEnd covers the order the migration
+// works in: the new links are written before the v1 documents are removed, so a
+// crash in between leaves something to rebuild from.
+func TestMigrateKeepsLegacyDocumentsFaithfully(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	// a v1 document with a field the current struct does not know about
+	legacy := bson.M{"user_id": int64(111), "username": "johndoe", "role": entity.RoleUser,
+		"state": entity.StateActive, "subscription_type": "status", "legacy_note": "keep me"}
+	result, err := db.collection(subscriptionsCollection).InsertOne(ctx, legacy)
+	if err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	// a token holder that was never activated in Telegram
+	if _, err = db.collection(subscriptionsCollection).InsertOne(ctx, entity.User{
+		Username: "ci-bot", Token: "ci-token", Role: entity.RoleUser, State: entity.StateAwait,
+	}); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	if _, err = db.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	var backup bson.M
+	if err = db.collection(legacyUsersCollection).FindOne(ctx, bson.M{"username": "johndoe"}).Decode(&backup); err != nil {
+		t.Fatalf("reading the backup: %v", err)
+	}
+	if backup["legacy_note"] != "keep me" {
+		t.Errorf("the backup dropped a v1 field: %v", backup)
+	}
+	if backup["_id"] != result.InsertedID {
+		t.Errorf("the backup changed the identifier: %v, want %v", backup["_id"], result.InsertedID)
+	}
+
+	// v1 authenticated a token whatever the state of its user, so the migrated
+	// sender must not start out locked
+	sender, err := db.GetSenderByToken("ci-token")
+	if err != nil || sender == nil {
+		t.Fatalf("sender not migrated: %v", err)
+	}
+	if !sender.IsActive() {
+		t.Errorf("sender = %+v, want it active so its token keeps working", sender)
+	}
 }

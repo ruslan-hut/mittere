@@ -158,9 +158,30 @@ func (m *MongoDB) Prepare(ctx context.Context) error {
 		}},
 	}
 	for _, spec := range specs {
-		if _, err := m.collection(spec.collection).Indexes().CreateOne(ctx, spec.model); err != nil {
+		if err := m.createIndex(ctx, spec.collection, spec.model); err != nil {
 			return fmt.Errorf("index on %s: %w", spec.collection, err)
 		}
 	}
 	return nil
+}
+
+// createIndex creates one index, rebuilding it when an index of the same name
+// exists with other options. Without this a changed events.ttl_days would stop
+// the service from starting.
+func (m *MongoDB) createIndex(ctx context.Context, collection string, model mongo.IndexModel) error {
+	indexes := m.collection(collection).Indexes()
+	_, err := indexes.CreateOne(ctx, model)
+	if err == nil {
+		return err
+	}
+	var cmdErr mongo.CommandError
+	const indexOptionsConflict = 85
+	if !errors.As(err, &cmdErr) || cmdErr.Code != indexOptionsConflict || model.Options == nil || model.Options.Name == nil {
+		return err
+	}
+	if _, dropErr := indexes.DropOne(ctx, *model.Options.Name); dropErr != nil {
+		return err
+	}
+	_, err = indexes.CreateOne(ctx, model)
+	return err
 }

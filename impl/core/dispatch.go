@@ -51,7 +51,11 @@ func (c *Core) Publish(ctx context.Context, msg *entity.Message, sender *entity.
 		return event, nil
 	}
 
-	text := c.transport.Format(msg)
+	// the text is rendered from the message as it will be journalled, with the
+	// topic already resolved
+	rendered := *msg
+	rendered.Topic = topic
+	text := c.transport.Format(&rendered)
 	log := c.log.With(slog.String("event_id", event.EventID), slog.String("topic", topic))
 
 	for i := range event.Deliveries {
@@ -65,18 +69,25 @@ func (c *Core) Publish(ctx context.Context, msg *entity.Message, sender *entity.
 			delivery.Status = entity.DeliveryFailed
 			delivery.Error = sendErr.Error()
 			log.With(slog.String("channel", delivery.ChannelID)).Error("delivery failed", sl.Err(sendErr))
-			continue
+		} else {
+			sentAt := time.Now().UTC()
+			delivery.Status = entity.DeliverySent
+			delivery.Error = ""
+			delivery.MessageID = messageID
+			delivery.SentAt = &sentAt
 		}
-		sentAt := time.Now().UTC()
-		delivery.Status = entity.DeliverySent
-		delivery.Error = ""
-		delivery.MessageID = messageID
-		delivery.SentAt = &sentAt
+		// the journal is written after every recipient: if the service dies
+		// mid fan out, a retry picks up where it stopped instead of sending
+		// everything again
+		if err = c.repo.SaveEvent(event); err != nil {
+			log.Error("save event", sl.Err(err))
+		}
 	}
 
 	event.Recalculate()
 	finishedAt := time.Now().UTC()
 	event.FinishedAt = &finishedAt
+	event.LeaseUntil = nil
 	if err = c.repo.SaveEvent(event); err != nil {
 		log.Error("save event", sl.Err(err))
 	}
@@ -118,17 +129,14 @@ func (c *Core) recipients(msg *entity.Message, topic string) ([]entity.Channel, 
 // earlier call with the same dedup key. It reports done when there is nothing
 // left to send: a fully delivered event is never sent twice.
 func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Sender, recipients []entity.Channel) (*entity.Event, bool, error) {
-	var previous *entity.Event
 	if msg.DedupKey != "" {
 		found, err := c.repo.GetEventByDedupKey(msg.DedupKey)
 		if err != nil {
 			return nil, false, fmt.Errorf("read event by dedup key: %w", err)
 		}
-		if found != nil {
-			if found.Status == entity.EventDelivered {
-				return found, true, nil
-			}
-			previous = found
+		// what is already delivered is never sent again
+		if found != nil && found.Status == entity.EventDelivered {
+			return found, true, nil
 		}
 	}
 
@@ -145,6 +153,14 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 	}
 	if sender != nil {
 		event.Sender = sender.Username
+	}
+
+	// claiming comes before any sending: a second call with the same dedup key,
+	// such as the retry 1C makes after its own timeout, is turned away instead
+	// of delivering the message a second time
+	previous, err := c.repo.ClaimEvent(event, c.eventLease)
+	if err != nil {
+		return nil, false, err
 	}
 	if previous != nil {
 		// keep the identifier, so a repeated call from 1C stays one event
@@ -175,17 +191,32 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 		event.Deliveries = append(event.Deliveries, delivery)
 	}
 
+	// what an earlier attempt delivered to a channel that has since left the
+	// topic stays in the journal; dropping it would hide a message that went out
+	if previous != nil {
+		current := make(map[string]bool, len(recipients))
+		for _, channel := range recipients {
+			current[channel.ChannelID] = true
+		}
+		for i := range previous.Deliveries {
+			if !current[previous.Deliveries[i].ChannelID] && previous.Deliveries[i].IsSent() {
+				event.Deliveries = append(event.Deliveries, previous.Deliveries[i])
+			}
+		}
+	}
+
 	if len(event.Deliveries) == 0 {
 		event.Status = entity.EventNoRecipients
 		finishedAt := time.Now().UTC()
 		event.FinishedAt = &finishedAt
-		if err := c.repo.SaveEvent(event); err != nil {
+		event.LeaseUntil = nil
+		if err = c.repo.SaveEvent(event); err != nil {
 			return nil, false, fmt.Errorf("save event: %w", err)
 		}
 		return event, true, nil
 	}
 
-	if err := c.repo.SaveEvent(event); err != nil {
+	if err = c.repo.SaveEvent(event); err != nil {
 		return nil, false, fmt.Errorf("save event: %w", err)
 	}
 	return event, false, nil

@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"mittere/entity"
 )
@@ -61,6 +62,9 @@ func (m *MongoDB) CreateSender(sender *entity.Sender) error {
 	defer cancel()
 
 	_, err := m.collection(sendersCollection).InsertOne(ctx, sender)
+	if mongo.IsDuplicateKeyError(err) {
+		return fmt.Errorf("sender %s: %w", sender.Username, entity.ErrConflict)
+	}
 	return err
 }
 
@@ -74,7 +78,7 @@ func (m *MongoDB) UpdateSender(sender *entity.Sender) error {
 		return err
 	}
 	if result.MatchedCount == 0 {
-		return fmt.Errorf("sender not found")
+		return fmt.Errorf("sender %s: %w", sender.Username, entity.ErrNotFound)
 	}
 	return nil
 }
@@ -89,7 +93,7 @@ func (m *MongoDB) DeleteSender(username string) error {
 		return err
 	}
 	if result.DeletedCount == 0 {
-		return fmt.Errorf("sender not found")
+		return fmt.Errorf("sender %s: %w", username, entity.ErrNotFound)
 	}
 	return nil
 }

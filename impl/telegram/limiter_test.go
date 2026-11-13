@@ -165,3 +165,43 @@ func TestLimiterRespectsContext(t *testing.T) {
 		t.Error("wait() returned nil, want the cancelled context error")
 	}
 }
+
+// TestLimiterPauseHoldsFullWindow covers the 429 answer arriving when the
+// window is already full: the pause must still be honoured, and it must not be
+// cut short by hits expiring sooner.
+func TestLimiterPauseHoldsFullWindow(t *testing.T) {
+	clock := newFakeClock()
+	l := clock.attach(newLimiter(2, time.Minute))
+
+	for i := 0; i < 2; i++ {
+		if err := l.wait(context.Background(), -100); err != nil {
+			t.Fatalf("wait() error = %v", err)
+		}
+	}
+	// Telegram asks for longer than what is left of the window
+	clock.now = clock.now.Add(50 * time.Second)
+	l.pause(-100, 40*time.Second)
+
+	if err := l.wait(context.Background(), -100); err != nil {
+		t.Fatalf("wait() error = %v", err)
+	}
+	if clock.total() != 40*time.Second {
+		t.Errorf("waited %v, want the 40s Telegram asked for", clock.total())
+	}
+}
+
+// TestLimiterLongerPauseWins makes sure a second 429 for the same chat does not
+// shorten a pause that is already running.
+func TestLimiterLongerPauseWins(t *testing.T) {
+	clock := newFakeClock()
+	l := clock.attach(newLimiter(20, time.Minute))
+
+	l.pause(-100, time.Minute)
+	l.pause(-100, 10*time.Second)
+	if err := l.wait(context.Background(), -100); err != nil {
+		t.Fatalf("wait() error = %v", err)
+	}
+	if clock.total() != time.Minute {
+		t.Errorf("waited %v, want the longer pause", clock.total())
+	}
+}

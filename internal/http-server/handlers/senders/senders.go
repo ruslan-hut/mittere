@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/render"
 	"log/slog"
 	"mittere/entity"
+	"mittere/internal/http-server/handlers"
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
 	"net/http"
@@ -73,7 +74,7 @@ func Create(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		}
 		if err := handler.CreateSender(&sender); err != nil {
 			log(logger, r).Error("create sender", sl.Err(err))
-			render.Status(r, http.StatusBadRequest)
+			render.Status(r, handlers.Status(err, http.StatusBadRequest))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}
@@ -85,17 +86,18 @@ func Create(logger *slog.Logger, handler Handler) http.HandlerFunc {
 func Update(logger *slog.Logger, handler Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username := chi.URLParam(r, "username")
+		// decoded without the defaults Bind would apply: a field the request
+		// leaves out must keep its stored value, not be reset
 		var sender entity.Sender
-		sender.Username = username
-		if err := render.Bind(r, &sender); err != nil {
+		if err := render.DecodeJSON(r.Body, &sender); err != nil {
 			render.Status(r, http.StatusBadRequest)
-			render.JSON(w, r, response.Error(err.Error()))
+			render.JSON(w, r, response.Error("Failed to decode request"))
 			return
 		}
 		sender.Username = username
 		if err := handler.UpdateSender(&sender); err != nil {
 			log(logger, r).Error("update sender", sl.Err(err))
-			render.Status(r, http.StatusNotFound)
+			render.Status(r, handlers.Status(err, http.StatusInternalServerError))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}
@@ -108,7 +110,7 @@ func Delete(logger *slog.Logger, handler Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := handler.DeleteSender(chi.URLParam(r, "username")); err != nil {
 			log(logger, r).Error("delete sender", sl.Err(err))
-			render.Status(r, http.StatusNotFound)
+			render.Status(r, handlers.Status(err, http.StatusInternalServerError))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}

@@ -10,10 +10,11 @@ import (
 // Telegram allows about 20 messages a minute to a group; without this the fan
 // out of one event over many chats runs straight into 429 answers.
 type limiter struct {
-	mu     sync.Mutex
-	limit  int
-	window time.Duration
-	hits   map[int64][]time.Time
+	mu      sync.Mutex
+	limit   int
+	window  time.Duration
+	hits    map[int64][]time.Time
+	blocked map[int64]time.Time
 
 	// now and sleep are swapped in tests
 	now   func() time.Time
@@ -28,11 +29,12 @@ func newLimiter(limit int, window time.Duration) *limiter {
 		window = time.Minute
 	}
 	return &limiter{
-		limit:  limit,
-		window: window,
-		hits:   make(map[int64][]time.Time),
-		now:    time.Now,
-		sleep:  sleepCtx,
+		limit:   limit,
+		window:  window,
+		hits:    make(map[int64][]time.Time),
+		blocked: make(map[int64]time.Time),
+		now:     time.Now,
+		sleep:   sleepCtx,
 	}
 }
 
@@ -41,13 +43,23 @@ func (l *limiter) wait(ctx context.Context, chatID int64) error {
 	for {
 		l.mu.Lock()
 		now := l.now()
-		hits := l.prune(chatID, now)
-		if len(hits) < l.limit {
-			l.hits[chatID] = append(hits, now)
-			l.mu.Unlock()
-			return nil
+		var delay time.Duration
+		if until, ok := l.blocked[chatID]; ok {
+			if until.After(now) {
+				delay = until.Sub(now)
+			} else {
+				delete(l.blocked, chatID)
+			}
 		}
-		delay := hits[0].Add(l.window).Sub(now)
+		if delay == 0 {
+			hits := l.prune(chatID, now)
+			if len(hits) < l.limit {
+				l.hits[chatID] = append(hits, now)
+				l.mu.Unlock()
+				return nil
+			}
+			delay = hits[0].Add(l.window).Sub(now)
+		}
 		l.mu.Unlock()
 		if delay <= 0 {
 			delay = time.Millisecond
@@ -58,19 +70,16 @@ func (l *limiter) wait(ctx context.Context, chatID int64) error {
 	}
 }
 
-// pause records that a chat must be left alone for a while, after Telegram
-// answered with 429 and a retry_after.
+// pause leaves a chat alone for a while, after Telegram answered with 429 and
+// a retry_after. The pause is kept apart from the counted messages, so it holds
+// however full the window is and whoever else is sending to the same chat.
 func (l *limiter) pause(chatID int64, d time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := l.now()
-	hits := l.prune(chatID, now)
-	// fill the window so nothing goes to this chat until the pause is over
-	blocked := now.Add(d).Add(-l.window)
-	for len(hits) < l.limit {
-		hits = append(hits, blocked)
+	until := l.now().Add(d)
+	if current, ok := l.blocked[chatID]; !ok || until.After(current) {
+		l.blocked[chatID] = until
 	}
-	l.hits[chatID] = hits
 }
 
 // prune drops the hits that have left the window. The caller holds the lock.

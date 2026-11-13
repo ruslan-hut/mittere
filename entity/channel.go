@@ -17,16 +17,17 @@ const (
 // Channel is a Telegram chat the service may deliver to. A forum topic inside a
 // group is a separate channel, told apart by ThreadID.
 type Channel struct {
-	ChannelID string    `json:"channel_id" bson:"channel_id"`
-	ChatID    int64     `json:"chat_id" bson:"chat_id" validate:"required"`
-	ThreadID  int       `json:"thread_id,omitempty" bson:"thread_id"`
-	Kind      string    `json:"kind" bson:"kind"`
-	Title     string    `json:"title,omitempty" bson:"title"`
-	Username  string    `json:"username,omitempty" bson:"username"`
-	State     string    `json:"state" bson:"state"`
-	LinkedAt  time.Time `json:"linked_at,omitempty" bson:"linked_at"`
-	LinkedBy  string    `json:"linked_by,omitempty" bson:"linked_by"`
-	Topics    []string  `json:"topics,omitempty" bson:"-"`
+	ChannelID  string    `json:"channel_id" bson:"channel_id"`
+	ChatID     int64     `json:"chat_id" bson:"chat_id" validate:"required"`
+	ThreadID   int       `json:"thread_id,omitempty" bson:"thread_id"`
+	Kind       string    `json:"kind" bson:"kind"`
+	Title      string    `json:"title,omitempty" bson:"title"`
+	Username   string    `json:"username,omitempty" bson:"username"`
+	State      string    `json:"state" bson:"state"`
+	LinkedAt   time.Time `json:"linked_at,omitempty" bson:"linked_at"`
+	LinkedBy   string    `json:"linked_by,omitempty" bson:"linked_by"`
+	LinkedByID int64     `json:"linked_by_id,omitempty" bson:"linked_by_id"`
+	Topics     []string  `json:"topics,omitempty" bson:"-"`
 }
 
 // ChannelKey builds the stable identifier of a channel from its chat and thread.

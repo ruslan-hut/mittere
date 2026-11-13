@@ -16,7 +16,9 @@ var (
 	ErrNoTransport  = errors.New("message service not initialized")
 	ErrUnknownTopic = errors.New("unknown topic")
 	ErrForbidden    = errors.New("topic not allowed for this sender")
-	ErrNotFound     = errors.New("not found")
+	ErrNotFound     = entity.ErrNotFound
+	ErrConflict     = entity.ErrConflict
+	ErrInProgress   = entity.ErrInProgress
 )
 
 // Repository is the data access the service needs.
@@ -50,6 +52,10 @@ type Repository interface {
 	UpdateSender(sender *entity.Sender) error
 	DeleteSender(username string) error
 
+	// ClaimEvent takes an event for delivery, returning what an earlier call
+	// with the same dedup key left behind, or entity.ErrInProgress while
+	// another call is delivering it.
+	ClaimEvent(event *entity.Event, lease time.Duration) (*entity.Event, error)
 	SaveEvent(event *entity.Event) error
 	GetEvent(eventID string) (*entity.Event, error)
 	GetEventByDedupKey(key string) (*entity.Event, error)
@@ -76,6 +82,7 @@ type Core struct {
 	transport   Transport
 	token       string
 	linkCodeTTL time.Duration
+	eventLease  time.Duration
 	startedAt   time.Time
 	log         *slog.Logger
 }
@@ -84,6 +91,7 @@ func New(repo Repository, log *slog.Logger) *Core {
 	return &Core{
 		repo:        repo,
 		linkCodeTTL: 30 * time.Minute,
+		eventLease:  3 * time.Minute,
 		startedAt:   time.Now().UTC(),
 		log:         log.With(sl.Module("core")),
 	}

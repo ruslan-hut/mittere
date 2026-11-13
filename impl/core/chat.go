@@ -78,6 +78,7 @@ func (c *Core) LinkChat(chat *entity.ChatInfo, code string) string {
 	channel.State = entity.StateActive
 	channel.LinkedAt = now
 	channel.LinkedBy = chat.ActorUsername
+	channel.LinkedByID = chat.ActorID
 
 	if err = c.repo.UseLinkCode(code, channelID, now); err != nil {
 		return "This code is unknown, expired or already used"
@@ -116,6 +117,12 @@ func (c *Core) StopChat(chat *entity.ChatInfo) string {
 	if channel == nil {
 		return "This chat is not linked"
 	}
+	// in a group anyone could silently switch off the notifications the whole
+	// chat relies on, so only the person who linked it may stop it; in a
+	// private chat it is the person's own channel
+	if !chat.IsPrivate() && channel.LinkedByID != 0 && channel.LinkedByID != chat.ActorID {
+		return fmt.Sprintf("Only %s, who linked this chat, can stop it; an administrator can disable it through the API", linkedByName(channel))
+	}
 	channel.State = entity.StateDisabled
 	if err = c.repo.SaveChannel(channel); err != nil {
 		c.log.Error("save channel", sl.Err(err))
@@ -140,6 +147,13 @@ func (c *Core) StatusChat(chat *entity.ChatInfo) string {
 	topics, _ := c.repo.GetTopicsOfChannel(channel.ChannelID)
 	return fmt.Sprintf("Channel: %s\nKind: %s\nState: %s\nTopics: %s",
 		channel.ChannelID, channel.Kind, channel.State, topicList(topics))
+}
+
+func linkedByName(channel *entity.Channel) string {
+	if channel.LinkedBy != "" {
+		return "@" + channel.LinkedBy
+	}
+	return "the person who linked this chat"
 }
 
 func topicList(topics []string) string {

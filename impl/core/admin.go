@@ -38,7 +38,7 @@ func (c *Core) CreateTopic(topic *entity.Topic) error {
 		return err
 	}
 	if existing != nil {
-		return fmt.Errorf("topic %s already exists", topic.Code)
+		return fmt.Errorf("topic %s: %w", topic.Code, ErrConflict)
 	}
 	return c.repo.CreateTopic(topic)
 }
@@ -110,6 +110,21 @@ func (c *Core) UpdateChannel(channel *entity.Channel, by string) error {
 	if stored == nil {
 		return ErrNotFound
 	}
+	// everything is checked before anything is written, so a bad request does
+	// not leave the channel half changed
+	if channel.State != "" && !validState(channel.State) {
+		return fmt.Errorf("unknown state %s", channel.State)
+	}
+	for _, code := range channel.Topics {
+		topic, err := c.repo.GetTopic(code)
+		if err != nil {
+			return err
+		}
+		if topic == nil {
+			return fmt.Errorf("%w: %s", ErrUnknownTopic, code)
+		}
+	}
+
 	if channel.State != "" {
 		stored.State = channel.State
 	}
@@ -120,18 +135,17 @@ func (c *Core) UpdateChannel(channel *entity.Channel, by string) error {
 		return err
 	}
 	if channel.Topics != nil {
-		for _, code := range channel.Topics {
-			topic, err := c.repo.GetTopic(code)
-			if err != nil {
-				return err
-			}
-			if topic == nil {
-				return fmt.Errorf("%w: %s", ErrUnknownTopic, code)
-			}
-		}
 		return c.repo.SetTopicsOfChannel(channel.ChannelID, channel.Topics, by)
 	}
 	return nil
+}
+
+func validState(state string) bool {
+	switch state {
+	case entity.StateActive, entity.StateAwait, entity.StateDisabled:
+		return true
+	}
+	return false
 }
 
 func (c *Core) DeleteChannel(channelID string) error {
@@ -208,11 +222,26 @@ func (c *Core) UpdateSender(sender *entity.Sender) error {
 	if stored == nil {
 		return ErrNotFound
 	}
+	// a field the request left out keeps its stored value: an update without
+	// allowed_topics must not silently widen a sender to every topic, and one
+	// without a state must not re-enable a disabled sender
 	if sender.Token == "" {
 		sender.Token = stored.Token
 	}
 	if sender.CreatedAt.IsZero() {
 		sender.CreatedAt = stored.CreatedAt
+	}
+	if sender.AllowedTopics == nil {
+		sender.AllowedTopics = stored.AllowedTopics
+	}
+	if sender.State == "" {
+		sender.State = stored.State
+	}
+	if sender.Scope == "" {
+		sender.Scope = stored.Scope
+	}
+	if sender.Name == "" {
+		sender.Name = stored.Name
 	}
 	return c.repo.UpdateSender(sender)
 }

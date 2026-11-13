@@ -5,9 +5,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/render"
+	"io"
 	"log/slog"
 	"mittere/entity"
 	"mittere/impl/core"
+	"mittere/internal/http-server/handlers"
 	"mittere/internal/lib/api/cont"
 	"mittere/internal/lib/api/response"
 	"mittere/internal/lib/sl"
@@ -82,11 +84,7 @@ func Update(logger *slog.Logger, handler Handler) http.HandlerFunc {
 
 		if err := handler.UpdateChannel(&channel, sender.Username); err != nil {
 			log(logger, r).Error("update channel", sl.Err(err))
-			status := http.StatusBadRequest
-			if errors.Is(err, core.ErrNotFound) {
-				status = http.StatusNotFound
-			}
-			render.Status(r, status)
+			render.Status(r, handlers.Status(err, http.StatusBadRequest))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}
@@ -103,7 +101,7 @@ func Delete(logger *slog.Logger, handler Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := handler.DeleteChannel(chi.URLParam(r, "id")); err != nil {
 			log(logger, r).Error("delete channel", sl.Err(err))
-			render.Status(r, http.StatusNotFound)
+			render.Status(r, handlers.Status(err, http.StatusInternalServerError))
 			render.JSON(w, r, response.Error(err.Error()))
 			return
 		}
@@ -118,12 +116,10 @@ func Link(logger *slog.Logger, handler Handler) http.HandlerFunc {
 		sender := cont.GetSender(r.Context())
 
 		var request linkRequest
-		if r.ContentLength > 0 {
-			if err := render.Bind(r, &request); err != nil {
-				render.Status(r, http.StatusBadRequest)
-				render.JSON(w, r, response.Error("Failed to decode request"))
-				return
-			}
+		if err := render.DecodeJSON(r.Body, &request); err != nil && !errors.Is(err, io.EOF) {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, response.Error("Failed to decode request"))
+			return
 		}
 
 		code, err := handler.CreateLinkCode(request.Topic, sender.Username)

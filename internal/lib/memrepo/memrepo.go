@@ -312,6 +312,34 @@ func (r *Repo) DeleteSender(username string) error {
 	return nil
 }
 
+// ClaimEvent mirrors the storage: it takes the event for delivery and returns
+// what an earlier call with the same dedup key left behind.
+func (r *Repo) ClaimEvent(event *entity.Event, lease time.Duration) (*entity.Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	until := now.Add(lease)
+	event.LeaseUntil = &until
+	if event.DedupKey == "" {
+		r.Events[event.EventID] = *event
+		return nil, nil
+	}
+	for _, stored := range r.Events {
+		if stored.DedupKey != event.DedupKey {
+			continue
+		}
+		if stored.LeaseUntil != nil && stored.LeaseUntil.After(now) {
+			return nil, entity.ErrInProgress
+		}
+		previous := stored
+		stored.LeaseUntil = &until
+		r.Events[stored.EventID] = stored
+		return &previous, nil
+	}
+	r.Events[event.EventID] = *event
+	return nil, nil
+}
+
 func (r *Repo) SaveEvent(event *entity.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

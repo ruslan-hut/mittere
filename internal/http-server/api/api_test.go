@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 const adminToken = "admin-token"
@@ -277,5 +278,86 @@ func TestLinkFlow(t *testing.T) {
 	}
 	if channel, _ := repo.GetChannel(entity.ChannelKey(-999, 0)); channel != nil {
 		t.Error("a used code linked a second chat")
+	}
+}
+
+// TestDuplicateInFlightIsRefused covers the 1C retry arriving while the first
+// call is still delivering: it must be told so, not deliver a second time.
+func TestDuplicateInFlightIsRefused(t *testing.T) {
+	repo := memrepo.New().WithTopic("ops", 111)
+	running := &entity.Event{EventID: "running", Topic: "ops", DedupKey: "invoice-42", Status: entity.EventPending}
+	if _, err := repo.ClaimEvent(running, time.Minute); err != nil {
+		t.Fatalf("ClaimEvent() error = %v", err)
+	}
+	transport := memrepo.NewTransport()
+
+	recorder := post(t, testServer(repo, transport), "/messages", adminToken,
+		map[string]interface{}{"topic": "ops", "type": "alert", "dedup_key": "invoice-42"})
+	if recorder.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d (%s)", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if len(transport.SentTo()) != 0 {
+		t.Errorf("the message went out a second time: %v", transport.SentTo())
+	}
+}
+
+// TestUpdateSenderKeepsWhatWasNotSent makes sure a partial update does not
+// widen a sender to every topic or re-enable a disabled one.
+func TestUpdateSenderKeepsWhatWasNotSent(t *testing.T) {
+	repo := memrepo.New().WithTopic("ops", 111)
+	repo.Senders["1c"] = entity.Sender{
+		Username: "1c", Token: "send-only", Scope: entity.ScopeSend, State: entity.StateDisabled,
+		AllowedTopics: []string{"marketing.shipments"},
+	}
+	router := testServer(repo, memrepo.NewTransport())
+
+	payload, _ := json.Marshal(map[string]interface{}{"name": "1C relay"})
+	request := httptest.NewRequest(http.MethodPut, "/senders/1c", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
+	}
+
+	stored, err := repo.GetSender("1c")
+	if err != nil || stored == nil {
+		t.Fatalf("GetSender() = %v, %v", stored, err)
+	}
+	if stored.Name != "1C relay" {
+		t.Errorf("name = %q, want it updated", stored.Name)
+	}
+	if len(stored.AllowedTopics) != 1 || stored.AllowedTopics[0] != "marketing.shipments" {
+		t.Errorf("allowed_topics = %v, want them kept", stored.AllowedTopics)
+	}
+	if stored.IsActive() {
+		t.Error("a disabled sender was re-enabled by an update that said nothing about its state")
+	}
+}
+
+// TestUpdateChannelRejectsUnknownTopicWithoutChanging checks that a refused
+// update leaves the channel as it was.
+func TestUpdateChannelRejectsUnknownTopicWithoutChanging(t *testing.T) {
+	repo := memrepo.New().WithTopic("ops", 111)
+	channelID := entity.ChannelKey(111, 0)
+	router := testServer(repo, memrepo.NewTransport())
+
+	payload, _ := json.Marshal(map[string]interface{}{"state": "disabled", "topics": []string{"ops", "nowhere"}})
+	request := httptest.NewRequest(http.MethodPut, "/channels/"+channelID, bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (%s)", recorder.Code, recorder.Body.String())
+	}
+
+	stored, err := repo.GetChannel(channelID)
+	if err != nil || stored == nil {
+		t.Fatalf("GetChannel() = %v, %v", stored, err)
+	}
+	if !stored.IsActive() {
+		t.Error("the refused update disabled the channel anyway")
 	}
 }

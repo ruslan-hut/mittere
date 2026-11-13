@@ -153,8 +153,10 @@ func (b *TgBot) Send(ctx context.Context, chatID int64, threadID int, text strin
 		}
 		b.limit.pause(chatID, wait)
 		b.log.With(slog.Int64("chat_id", chatID), slog.Int("retry_after", tooMany.RetryAfter)).Warn("rate limited by telegram")
-		if sleepErr := sleepCtx(ctx, wait); sleepErr != nil {
-			return 0, attempts, sleepErr
+		// waiting through the limiter honours the pause and counts the repeat
+		// against the window of this chat
+		if waitErr := b.limit.wait(ctx, chatID); waitErr != nil {
+			return 0, attempts, waitErr
 		}
 		attempts++
 		messageID, err = b.send(ctx, chatID, threadID, text, true)
@@ -164,14 +166,31 @@ func (b *TgBot) Send(ctx context.Context, chatID int64, threadID int, text strin
 		return 0, attempts, err
 	}
 
-	// most other failures are markup the parser does not accept
-	b.log.With(slog.Int64("chat_id", chatID)).Warn("sending message", sl.Err(err))
+	// only markup the parser rejects is worth sending again without it. Being
+	// blocked, kicked or an unknown chat will not go away on a repeat, and
+	// repeating a message Telegram may already have accepted would double it
+	if !isMarkupError(err) {
+		return 0, attempts, err
+	}
+	b.log.With(slog.Int64("chat_id", chatID)).Warn("markup rejected, sending as plain text", sl.Err(err))
 	attempts++
 	messageID, plainErr := b.send(ctx, chatID, threadID, removeMarkup(text), false)
 	if plainErr != nil {
 		return 0, attempts, plainErr
 	}
 	return messageID, attempts, nil
+}
+
+// isMarkupError reports whether Telegram refused the message because of its
+// markup, which is the one failure a plain text repeat can fix.
+func isMarkupError(err error) bool {
+	if !errors.Is(err, bot.ErrorBadRequest) {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "parse entities") ||
+		strings.Contains(text, "parse markdown") ||
+		strings.Contains(text, "entities")
 }
 
 func (b *TgBot) send(ctx context.Context, chatID int64, threadID int, text string, markup bool) (int, error) {

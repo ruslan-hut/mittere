@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"mittere/entity"
 )
@@ -45,6 +46,9 @@ func (m *MongoDB) CreateTopic(topic *entity.Topic) error {
 	defer cancel()
 
 	_, err := m.collection(topicsCollection).InsertOne(ctx, topic)
+	if mongo.IsDuplicateKeyError(err) {
+		return fmt.Errorf("topic %s: %w", topic.Code, entity.ErrConflict)
+	}
 	return err
 }
 
@@ -69,7 +73,7 @@ func (m *MongoDB) UpdateTopic(topic *entity.Topic) error {
 		return err
 	}
 	if result.MatchedCount == 0 {
-		return fmt.Errorf("topic not found")
+		return fmt.Errorf("topic %s: %w", topic.Code, entity.ErrNotFound)
 	}
 	return nil
 }
@@ -84,7 +88,7 @@ func (m *MongoDB) DeleteTopic(code string) error {
 		return err
 	}
 	if result.DeletedCount == 0 {
-		return fmt.Errorf("topic not found")
+		return fmt.Errorf("topic %s: %w", code, entity.ErrNotFound)
 	}
 	_, err = m.collection(subscriptionsCollection).DeleteMany(ctx, bson.M{"topic_code": code})
 	return err

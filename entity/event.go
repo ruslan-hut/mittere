@@ -58,18 +58,21 @@ func (d *Delivery) IsSent() bool {
 
 // Event is the journal record of one published message and its deliveries.
 type Event struct {
-	EventID    string      `json:"event_id" bson:"event_id"`
-	Topic      string      `json:"topic" bson:"topic"`
-	Type       string      `json:"type,omitempty" bson:"type"`
-	Subject    string      `json:"subject,omitempty" bson:"subject"`
-	Text       string      `json:"text,omitempty" bson:"text"`
-	Payload    interface{} `json:"payload,omitempty" bson:"payload"`
-	Sender     string      `json:"sender,omitempty" bson:"sender"`
-	DedupKey   string      `json:"dedup_key,omitempty" bson:"dedup_key,omitempty"`
-	Status     string      `json:"status" bson:"status"`
-	CreatedAt  time.Time   `json:"created_at" bson:"created_at"`
-	FinishedAt *time.Time  `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
-	Deliveries []Delivery  `json:"deliveries" bson:"deliveries"`
+	EventID   string      `json:"event_id" bson:"event_id"`
+	Topic     string      `json:"topic" bson:"topic"`
+	Type      string      `json:"type,omitempty" bson:"type"`
+	Subject   string      `json:"subject,omitempty" bson:"subject"`
+	Text      string      `json:"text,omitempty" bson:"text"`
+	Payload   interface{} `json:"payload,omitempty" bson:"payload"`
+	Sender    string      `json:"sender,omitempty" bson:"sender"`
+	DedupKey  string      `json:"dedup_key,omitempty" bson:"dedup_key,omitempty"`
+	Status    string      `json:"status" bson:"status"`
+	CreatedAt time.Time   `json:"created_at" bson:"created_at"`
+	// LeaseUntil holds the claim of the call that is delivering this event;
+	// while it is in the future no other call may send the same dedup key.
+	LeaseUntil *time.Time `json:"-" bson:"lease_until,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
+	Deliveries []Delivery `json:"deliveries" bson:"deliveries"`
 }
 
 // Recalculate sets the event status from the state of its deliveries.

@@ -61,7 +61,7 @@ func (m *MongoDB) DeleteChannel(channelID string) error {
 		return err
 	}
 	if result.DeletedCount == 0 {
-		return fmt.Errorf("channel not found")
+		return fmt.Errorf("channel %s: %w", channelID, entity.ErrNotFound)
 	}
 	_, err = m.collection(subscriptionsCollection).DeleteMany(ctx, bson.M{"channel_id": channelID})
 	return err

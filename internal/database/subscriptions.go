@@ -28,7 +28,7 @@ func (m *MongoDB) Unsubscribe(topic, channelID string) error {
 		return err
 	}
 	if result.DeletedCount == 0 {
-		return fmt.Errorf("subscription not found")
+		return fmt.Errorf("subscription of %s to %s: %w", channelID, topic, entity.ErrNotFound)
 	}
 	return nil
 }
@@ -74,22 +74,24 @@ func (m *MongoDB) SetTopicsOfChannel(channelID string, topics []string, by strin
 	ctx, cancel := timeoutCtx()
 	defer cancel()
 
-	if _, err := m.collection(subscriptionsCollection).DeleteMany(ctx, bson.M{"channel_id": channelID}); err != nil {
-		return err
-	}
-	if len(topics) == 0 {
-		return nil
-	}
-	docs := make([]interface{}, 0, len(topics))
+	// the wanted links go in first and only then the rest is removed, so the
+	// channel is never left without subscriptions halfway through
+	wanted := make([]string, 0, len(topics))
 	seen := make(map[string]bool, len(topics))
 	for _, topic := range topics {
 		if seen[topic] {
 			continue
 		}
 		seen[topic] = true
+		wanted = append(wanted, topic)
 		sub := entity.NewSubscription(topic, channelID, by)
-		docs = append(docs, sub)
+		filter := bson.M{"topic_code": topic, "channel_id": channelID}
+		update := bson.M{"$setOnInsert": sub}
+		if _, err := m.collection(subscriptionsCollection).UpdateOne(ctx, filter, update, options.Update().SetUpsert(true)); err != nil {
+			return err
+		}
 	}
-	_, err := m.collection(subscriptionsCollection).InsertMany(ctx, docs)
+	filter := bson.M{"channel_id": channelID, "topic_code": bson.M{"$nin": wanted}}
+	_, err := m.collection(subscriptionsCollection).DeleteMany(ctx, filter)
 	return err
 }

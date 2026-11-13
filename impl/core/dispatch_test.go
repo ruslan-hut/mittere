@@ -8,6 +8,7 @@ import (
 	"mittere/entity"
 	"mittere/internal/lib/memrepo"
 	"testing"
+	"time"
 )
 
 func testCore(repo *memrepo.Repo, transport Transport) *Core {
@@ -305,4 +306,86 @@ func sameChats(got, want []int64) bool {
 		}
 	}
 	return true
+}
+
+// TestPublishRefusesParallelDuplicate covers the retry 1C makes after its own
+// timeout while the first call is still fanning out: the message must not go
+// out twice.
+func TestPublishRefusesParallelDuplicate(t *testing.T) {
+	repo := memrepo.New().WithTopic("ops", 111)
+	c := testCore(repo, memrepo.NewTransport())
+
+	msg := entity.Message{Topic: "ops", Type: "alert", DedupKey: "invoice-42"}
+	running := &entity.Event{EventID: "running", Topic: "ops", DedupKey: "invoice-42", Status: entity.EventPending}
+	if _, err := repo.ClaimEvent(running, time.Minute); err != nil {
+		t.Fatalf("ClaimEvent() error = %v", err)
+	}
+
+	if _, err := c.Publish(context.Background(), &msg, nil); !errors.Is(err, ErrInProgress) {
+		t.Errorf("Publish() error = %v, want %v", err, ErrInProgress)
+	}
+}
+
+// TestPublishResumesAfterCrash covers a service that died mid fan out: the
+// deliveries that did go through were journalled, so the retry only sends the
+// rest.
+func TestPublishResumesAfterCrash(t *testing.T) {
+	repo := memrepo.New().WithTopic("ops", 111, 222)
+	transport := memrepo.NewTransport()
+
+	sentAt := time.Now().UTC().Add(-time.Minute)
+	expired := time.Now().UTC().Add(-time.Second)
+	crashed := entity.Event{
+		EventID:    "crashed",
+		Topic:      "ops",
+		DedupKey:   "invoice-42",
+		Status:     entity.EventPending,
+		LeaseUntil: &expired,
+		Deliveries: []entity.Delivery{
+			{ChannelID: entity.ChannelKey(111, 0), ChatID: 111, Status: entity.DeliverySent, Attempts: 1, MessageID: 7, SentAt: &sentAt},
+			{ChannelID: entity.ChannelKey(222, 0), ChatID: 222, Status: entity.DeliveryPending},
+		},
+	}
+	repo.Events["crashed"] = crashed
+
+	c := testCore(repo, transport)
+	event, err := c.Publish(context.Background(), &entity.Message{Topic: "ops", Type: "alert", DedupKey: "invoice-42"}, nil)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if event.EventID != "crashed" || event.Status != entity.EventDelivered {
+		t.Errorf("event = %+v, want the same event, now delivered", event)
+	}
+	if sent := transport.SentTo(); !sameChats(sent, []int64{222}) {
+		t.Errorf("sent to %v, want only the recipient that was still pending", sent)
+	}
+}
+
+// TestPublishKeepsDeliveriesOfChannelsThatLeft makes sure a retry does not
+// erase the record of a message that did go out to a channel which has since
+// been unsubscribed.
+func TestPublishKeepsDeliveriesOfChannelsThatLeft(t *testing.T) {
+	repo := memrepo.New().WithTopic("ops", 111, 222)
+	transport := memrepo.NewTransport()
+	transport.FailFor[222] = errors.New("timeout")
+	c := testCore(repo, transport)
+
+	msg := entity.Message{Topic: "ops", Type: "alert", DedupKey: "invoice-42"}
+	if _, err := c.Publish(context.Background(), &msg, nil); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	delete(repo.Subs["ops"], entity.ChannelKey(111, 0))
+	delete(transport.FailFor, 222)
+
+	event, err := c.Publish(context.Background(), &msg, nil)
+	if err != nil {
+		t.Fatalf("second Publish() error = %v", err)
+	}
+	if len(event.Deliveries) != 2 {
+		t.Fatalf("deliveries = %d, want the new one and the one already sent", len(event.Deliveries))
+	}
+	if sent := transport.SentTo(); !sameChats(sent, []int64{111, 222}) {
+		t.Errorf("sent to %v, want each chat once", sent)
+	}
 }

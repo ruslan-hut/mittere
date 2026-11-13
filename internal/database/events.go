@@ -2,11 +2,86 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"mittere/entity"
+	"time"
 )
+
+// ClaimEvent takes the event for delivery and returns what an earlier call
+// with the same dedup key left behind, or nil when the event is new. While a
+// claim holds, a second call with the same dedup key gets entity.ErrInProgress
+// instead of sending the message a second time; a claim older than the lease is
+// taken over, so a crashed call does not block the key forever. An event
+// without a dedup key is simply inserted: there is nothing to deduplicate.
+func (m *MongoDB) ClaimEvent(event *entity.Event, lease time.Duration) (*entity.Event, error) {
+	ctx, cancel := timeoutCtx()
+	defer cancel()
+
+	now := time.Now().UTC()
+	until := now.Add(lease)
+	event.LeaseUntil = &until
+
+	if event.DedupKey == "" {
+		if _, err := m.collection(eventsCollection).InsertOne(ctx, event); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	filter := bson.M{
+		"dedup_key": event.DedupKey,
+		"$or": []bson.M{
+			{"lease_until": bson.M{"$exists": false}},
+			{"lease_until": bson.M{"$lt": now}},
+		},
+	}
+	insert, err := insertDocument(event)
+	if err != nil {
+		return nil, err
+	}
+	update := bson.M{
+		"$set":         bson.M{"lease_until": until},
+		"$setOnInsert": insert,
+	}
+	opts := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.Before)
+
+	result := m.collection(eventsCollection).FindOneAndUpdate(ctx, filter, update, opts)
+	if err = result.Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			// the upsert inserted this event, there was nothing before
+			return nil, nil
+		}
+		if mongo.IsDuplicateKeyError(err) {
+			// a document with this key exists but its claim is still valid
+			return nil, entity.ErrInProgress
+		}
+		return nil, fmt.Errorf("mongodb claim error: %w", err)
+	}
+	previous := &entity.Event{}
+	if err = result.Decode(previous); err != nil {
+		return nil, fmt.Errorf("mongodb decode error: %w", err)
+	}
+	return previous, nil
+}
+
+// insertDocument renders an event for $setOnInsert, without the lease, which
+// the same update sets on its own.
+func insertDocument(event *entity.Event) (bson.M, error) {
+	raw, err := bson.Marshal(event)
+	if err != nil {
+		return nil, err
+	}
+	doc := bson.M{}
+	if err = bson.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	delete(doc, "lease_until")
+	return doc, nil
+}
 
 // SaveEvent inserts or replaces the journal record of an event.
 func (m *MongoDB) SaveEvent(event *entity.Event) error {
