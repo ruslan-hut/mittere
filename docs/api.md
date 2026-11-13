@@ -215,7 +215,13 @@ curl -X POST http://127.0.0.1:9800/topics \
 | DELETE | `/channels/{id}` | удалить канал и его подписки |
 
 Поля канала: `channel_id`, `chat_id`, `thread_id`, `kind`, `title`, `username`,
-`state` (`active`, `await`, `disabled`), `linked_at`, `linked_by`, `topics`.
+`state` (`active`, `await`, `disabled`), `linked_at`, `linked_by` и
+`linked_by_id` (кто привязал чат — он же может остановить доставку командой
+`stop` в группе), `topics`.
+
+`PUT` принимает `state`, `title` и `topics`; `chat_id` и `thread_id` задаются
+при привязке чата и руками не меняются. Темы и состояние проверяются до
+записи: если в списке неизвестная тема, не меняется ничего.
 
 ### Привязка чата кодом
 
