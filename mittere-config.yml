@@ -15,3 +15,9 @@ mongo:
 telegram:
   enabled: true
   api_key: ${TELEGRAM_API_KEY}
+  rate_limit: 20
+  rate_window: 60
+events:
+  ttl_days: 90
+link:
+  code_ttl_minutes: 30

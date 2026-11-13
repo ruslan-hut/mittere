@@ -7,16 +7,18 @@ import (
 
 type ctxKey string
 
-const UserDataKey ctxKey = "userData"
+const SenderDataKey ctxKey = "senderData"
 
-func PutUser(c context.Context, user *entity.User) context.Context {
-	return context.WithValue(c, UserDataKey, *user)
+// PutSender stores the authenticated sender in the request context.
+func PutSender(c context.Context, sender *entity.Sender) context.Context {
+	return context.WithValue(c, SenderDataKey, *sender)
 }
 
-func GetUser(c context.Context) *entity.User {
-	user, ok := c.Value(UserDataKey).(entity.User)
+// GetSender returns the authenticated sender, or an empty one.
+func GetSender(c context.Context) *entity.Sender {
+	sender, ok := c.Value(SenderDataKey).(entity.Sender)
 	if !ok {
-		return &entity.User{}
+		return &entity.Sender{}
 	}
-	return &user
+	return &sender
 }

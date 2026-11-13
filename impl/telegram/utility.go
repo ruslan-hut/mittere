@@ -1,11 +1,11 @@
 package telegram
 
 import (
-	"crypto/rand"
-	"fmt"
-	"math/big"
+	"regexp"
 	"strings"
 )
+
+var codePattern = regexp.MustCompile(`^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
 
 func removeMarkup(input string) string {
 	reservedChars := "\\`*_|"
@@ -33,25 +33,6 @@ func escapeText(input string) string {
 	return sb.String()
 }
 
-func extractCommand(text string) string {
-	if len(text) == 0 || text[0] != '/' {
-		return ""
-	}
-	cmd := text[1:]
-	if i := strings.IndexAny(cmd, " @"); i != -1 {
-		cmd = cmd[:i]
-	}
-	return cmd
-}
-
-func generatePinCode() string {
-	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
-	if err != nil {
-		return "000000"
-	}
-	return fmt.Sprintf("%06d", n.Int64())
-}
-
 // escapeCode escapes symbols that MarkdownV2 reserves inside pre and code entities.
 func escapeCode(input string) string {
 	var sb strings.Builder
@@ -62,4 +43,29 @@ func escapeCode(input string) string {
 		sb.WriteRune(char)
 	}
 	return sb.String()
+}
+
+// extractCommand splits a message into a bot command and its arguments. The
+// bot mention is cut off, so the same command works in a group, where commands
+// are addressed as /link@some_bot.
+func extractCommand(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if len(text) == 0 || text[0] != '/' {
+		return "", ""
+	}
+	cmd := text[1:]
+	args := ""
+	if i := strings.IndexAny(cmd, " \n"); i != -1 {
+		args = strings.TrimSpace(cmd[i+1:])
+		cmd = cmd[:i]
+	}
+	if i := strings.Index(cmd, "@"); i != -1 {
+		cmd = cmd[:i]
+	}
+	return strings.ToLower(cmd), args
+}
+
+// looksLikeCode reports whether a plain message is a linking code.
+func looksLikeCode(text string) bool {
+	return codePattern.MatchString(strings.ToUpper(strings.TrimSpace(text)))
 }

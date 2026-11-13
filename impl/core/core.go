@@ -1,117 +1,138 @@
 package core
 
 import (
+	"context"
 	"crypto/subtle"
-	"fmt"
+	"errors"
 	"log/slog"
 	"mittere/entity"
 	"mittere/internal/lib/sl"
+	"time"
 )
 
+// Errors the HTTP layer maps onto status codes.
+var (
+	ErrNoRepository = errors.New("repository not initialized")
+	ErrNoTransport  = errors.New("message service not initialized")
+	ErrUnknownTopic = errors.New("unknown topic")
+	ErrForbidden    = errors.New("topic not allowed for this sender")
+	ErrNotFound     = errors.New("not found")
+)
+
+// Repository is the data access the service needs.
 type Repository interface {
-	GetUserByToken(token string) (*entity.User, error)
-	GetUsers() ([]entity.User, error)
-	GetUserByUsername(username string) (*entity.User, error)
-	CreateUser(user *entity.User) error
-	UpdateUser(user *entity.User) error
-	DeleteUser(username string) error
+	Ping(ctx context.Context) error
+
+	GetChannels() ([]entity.Channel, error)
+	GetChannel(channelID string) (*entity.Channel, error)
+	SaveChannel(channel *entity.Channel) error
+	DeleteChannel(channelID string) error
+	GetChannelsByTopic(topic string) ([]entity.Channel, error)
+	GetChannelsByUsername(username string) ([]entity.Channel, error)
+	CountChannels(ctx context.Context) (int64, error)
+
+	GetTopics() ([]entity.Topic, error)
+	GetTopic(code string) (*entity.Topic, error)
+	CreateTopic(topic *entity.Topic) error
+	EnsureTopic(topic *entity.Topic) error
+	UpdateTopic(topic *entity.Topic) error
+	DeleteTopic(code string) error
+
+	Subscribe(sub *entity.Subscription) error
+	Unsubscribe(topic, channelID string) error
+	GetTopicsOfChannel(channelID string) ([]string, error)
+	SetTopicsOfChannel(channelID string, topics []string, by string) error
+
+	GetSenderByToken(token string) (*entity.Sender, error)
+	GetSenders() ([]entity.Sender, error)
+	GetSender(username string) (*entity.Sender, error)
+	CreateSender(sender *entity.Sender) error
+	UpdateSender(sender *entity.Sender) error
+	DeleteSender(username string) error
+
+	SaveEvent(event *entity.Event) error
+	GetEvent(eventID string) (*entity.Event, error)
+	GetEventByDedupKey(key string) (*entity.Event, error)
+	FindEvents(filter entity.EventFilter) ([]entity.Event, error)
+
+	CreateLinkCode(code *entity.LinkCode) error
+	GetLinkCode(code string) (*entity.LinkCode, error)
+	UseLinkCode(code, channelID string, usedAt time.Time) error
 }
 
-type MessageService interface {
-	SendEventMessage(msg *entity.EventMessage) error
+// Transport delivers a formatted message to one chat. Rate limiting and the
+// retry after a 429 belong to the transport; it reports how many attempts it
+// made so the journal can record them.
+type Transport interface {
+	Format(msg *entity.Message) string
+	Send(ctx context.Context, chatID int64, threadID int, text string) (messageID int, attempts int, err error)
+	BotName() string
+	Alive() bool
 }
 
+// Core holds the business logic: authentication, routing and dispatch.
 type Core struct {
-	repo  Repository
-	ms    MessageService
-	token string
-	log   *slog.Logger
+	repo        Repository
+	transport   Transport
+	token       string
+	linkCodeTTL time.Duration
+	startedAt   time.Time
+	log         *slog.Logger
 }
 
 func New(repo Repository, log *slog.Logger) *Core {
 	return &Core{
-		repo: repo,
-		log:  log.With(sl.Module("core")),
+		repo:        repo,
+		linkCodeTTL: 30 * time.Minute,
+		startedAt:   time.Now().UTC(),
+		log:         log.With(sl.Module("core")),
 	}
 }
 
-func (c *Core) SetMessageService(ms MessageService) {
-	c.ms = ms
+// SetTransport attaches the message transport.
+func (c *Core) SetTransport(t Transport) {
+	c.transport = t
 }
 
+// SetToken sets the static administrative token from the configuration.
 func (c *Core) SetToken(token string) {
 	c.token = token
 }
 
-func (c *Core) SendEvent(message *entity.EventMessage) (interface{}, error) {
-	if c.ms == nil {
-		return nil, fmt.Errorf("not set MessageService")
+// SetLinkCodeTTL sets how long a chat linking code stays usable.
+func (c *Core) SetLinkCodeTTL(ttl time.Duration) {
+	if ttl > 0 {
+		c.linkCodeTTL = ttl
 	}
-	return nil, c.ms.SendEventMessage(message)
 }
 
-func (c *Core) Notify(message *entity.EventMessage) (interface{}, error) {
-	if c.ms == nil {
-		return nil, fmt.Errorf("not set MessageService")
-	}
-	return nil, c.ms.SendEventMessage(message)
-}
-
-func (c *Core) GetUsers() ([]entity.User, error) {
-	if c.repo == nil {
-		return nil, fmt.Errorf("repository not initialized")
-	}
-	return c.repo.GetUsers()
-}
-
-func (c *Core) GetUser(username string) (*entity.User, error) {
-	if c.repo == nil {
-		return nil, fmt.Errorf("repository not initialized")
-	}
-	return c.repo.GetUserByUsername(username)
-}
-
-func (c *Core) CreateUser(user *entity.User) error {
-	if c.repo == nil {
-		return fmt.Errorf("repository not initialized")
-	}
-	return c.repo.CreateUser(user)
-}
-
-func (c *Core) UpdateUser(user *entity.User) error {
-	if c.repo == nil {
-		return fmt.Errorf("repository not initialized")
-	}
-	return c.repo.UpdateUser(user)
-}
-
-func (c *Core) DeleteUser(username string) error {
-	if c.repo == nil {
-		return fmt.Errorf("repository not initialized")
-	}
-	return c.repo.DeleteUser(username)
-}
-
-func (c *Core) AuthenticateByToken(token string) (*entity.User, error) {
+// AuthenticateByToken resolves a Bearer token to a sender. The static token
+// from the configuration is an administrator.
+func (c *Core) AuthenticateByToken(token string) (*entity.Sender, error) {
 	if token == "" {
-		return nil, fmt.Errorf("token not provided")
+		return nil, errors.New("token not provided")
 	}
 	if c.token != "" && subtle.ConstantTimeCompare([]byte(c.token), []byte(token)) == 1 {
-		return &entity.User{
+		return &entity.Sender{
 			Username: "system",
 			Name:     "system",
-			Role:     entity.RoleAdmin,
+			Scope:    entity.ScopeAdmin,
+			State:    entity.StateActive,
 		}, nil
 	}
 	if c.repo == nil {
-		return nil, fmt.Errorf("repository not initialized")
+		return nil, ErrNoRepository
 	}
-	user, err := c.repo.GetUserByToken(token)
+	sender, err := c.repo.GetSenderByToken(token)
 	if err != nil {
-		c.log.With(sl.Secret("token", token)).Error("read user data", sl.Err(err))
+		c.log.With(sl.Secret("token", token)).Error("read sender", sl.Err(err))
+		return nil, errors.New("sender not found")
 	}
-	if user == nil {
-		return nil, fmt.Errorf("user not found")
+	if sender == nil {
+		return nil, errors.New("sender not found")
 	}
-	return user, nil
+	if !sender.IsActive() {
+		return nil, errors.New("sender is not active")
+	}
+	return sender, nil
 }

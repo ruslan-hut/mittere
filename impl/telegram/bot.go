@@ -2,47 +2,48 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"log/slog"
 	"mittere/entity"
 	"mittere/internal/lib/sl"
+	"strings"
 	"sync"
+	"time"
 )
 
-type Repository interface {
-	GetUsers() ([]entity.User, error)
-	GetUserByTelegramID(id int64) (*entity.User, error)
-	UpsertUser(user *entity.User) error
+// maxRetryAfter caps how long a 429 answer may hold a delivery.
+const maxRetryAfter = 60 * time.Second
+
+// Commands is the business logic behind the bot commands, implemented by core.
+type Commands interface {
+	StartChat(chat *entity.ChatInfo, code string) string
+	LinkChat(chat *entity.ChatInfo, code string) string
+	StopChat(chat *entity.ChatInfo) string
+	StatusChat(chat *entity.ChatInfo) string
 }
 
-// TgBot implements EventHandler
+// TgBot is the Telegram transport: it sends messages and serves the chat
+// commands that link chats to topics.
 type TgBot struct {
-	mu     sync.RWMutex
-	bot    *bot.Bot
-	cancel context.CancelFunc
-	database   Repository
-	users      map[int64]entity.User
-	invites    []string
-	event      chan MessageContent
-	send       chan MessageContent
-	log        *slog.Logger
+	mu       sync.RWMutex
+	bot      *bot.Bot
+	cancel   context.CancelFunc
+	commands Commands
+	limit    *limiter
+	botName  string
+	alive    bool
+	log      *slog.Logger
 }
 
-type MessageContent struct {
-	ChatID   int64
-	Text     string
-	Role     string // target role: "admin" = admins only, "user" or "" = all active
-	Username string // if set, deliver only to this username
-}
-
-func New(apiKey string, log *slog.Logger) (*TgBot, error) {
+// New creates the bot. Rate is the number of messages allowed to one chat per
+// window; Telegram allows about 20 a minute to a group.
+func New(apiKey string, rate int, window time.Duration, log *slog.Logger) (*TgBot, error) {
 	tgBot := &TgBot{
-		users:   make(map[int64]entity.User),
-		event:   make(chan MessageContent, 100),
-		send:    make(chan MessageContent, 100),
-		log:     log.With(sl.Module("telegram")),
+		limit: newLimiter(rate, window),
+		log:   log.With(sl.Module("telegram")),
 	}
 
 	opts := []bot.Option{
@@ -57,179 +58,192 @@ func New(apiKey string, log *slog.Logger) (*TgBot, error) {
 	return tgBot, nil
 }
 
-// SetDatabase attach database service
-func (b *TgBot) SetDatabase(database Repository) {
-	b.database = database
+// SetCommands attaches the handler of the bot commands.
+func (b *TgBot) SetCommands(commands Commands) {
+	b.commands = commands
 }
 
+// Start begins long polling for updates.
 func (b *TgBot) Start() {
-	b.users = make(map[int64]entity.User)
-	if b.database != nil {
-		users, err := b.database.GetUsers()
-		if err != nil {
-			b.log.Error("getting users", sl.Err(err))
-		}
-		if users != nil {
-			for _, user := range users {
-				if user.UserID != 0 {
-					b.users[user.UserID] = user
-				}
-			}
-		}
-		b.log.With(slog.Int("count", len(b.users))).Info("telegram users loaded")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancel = cancel
 
-	go b.sendPump()
-	go b.eventPump()
+	meCtx, meCancel := context.WithTimeout(ctx, 10*time.Second)
+	me, err := b.bot.GetMe(meCtx)
+	meCancel()
+	b.mu.Lock()
+	if err != nil {
+		b.log.Error("telegram getMe", sl.Err(err))
+		b.alive = false
+	} else {
+		b.botName = me.Username
+		b.alive = true
+	}
+	b.mu.Unlock()
+
 	go b.bot.Start(ctx)
 }
 
-// Stop gracefully shuts down the bot
+// Stop shuts the bot down.
 func (b *TgBot) Stop() {
 	if b.cancel != nil {
 		b.cancel()
 	}
-	close(b.event)
-	close(b.send)
+	b.mu.Lock()
+	b.alive = false
+	b.mu.Unlock()
 	b.log.Info("telegram bot stopped")
 }
 
-// handleUpdate processes incoming Telegram updates
-func (b *TgBot) handleUpdate(_ context.Context, _ *bot.Bot, update *models.Update) {
-	if update.Message == nil {
-		return
+// BotName returns the username of the bot.
+func (b *TgBot) BotName() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.botName
+}
+
+// Alive reports whether the Telegram API answered when the bot started.
+func (b *TgBot) Alive() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.alive
+}
+
+// Format renders a message as Telegram markdown.
+func (b *TgBot) Format(msg *entity.Message) string {
+	subject := msg.Subject
+	if subject == "" {
+		subject = msg.Topic
+	}
+	text := fmt.Sprintf("*%v*: `#%v`\n", msg.Type, subject)
+	if msg.Text != "" {
+		text += fmt.Sprintf("%v\n", escapeText(msg.Text))
+	}
+	if msg.Payload != nil {
+		payload := fmt.Sprintf("%v\n", msg.Payload)
+		text += fmt.Sprintf("```\n%v\n```", escapeCode(payload))
+	}
+	return text
+}
+
+// Send delivers a message to one chat and reports how many attempts it took.
+// A 429 answer is honoured: the chat is paused for the retry_after Telegram
+// asked for and the message is sent once more. A message the Telegram markdown
+// parser rejects is sent once more without markup.
+func (b *TgBot) Send(ctx context.Context, chatID int64, threadID int, text string) (int, int, error) {
+	attempts := 0
+	if err := b.limit.wait(ctx, chatID); err != nil {
+		return 0, attempts, err
 	}
 
-	cmd := extractCommand(update.Message.Text)
-	if cmd == "" {
-		if b.checkInviteCode(update.Message.Text) {
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.confirmUser(update)}
+	attempts++
+	messageID, err := b.send(ctx, chatID, threadID, text, true)
+	if err == nil {
+		return messageID, attempts, nil
+	}
+
+	var tooMany *bot.TooManyRequestsError
+	if errors.As(err, &tooMany) {
+		wait := time.Duration(tooMany.RetryAfter) * time.Second
+		if wait <= 0 {
+			wait = time.Second
 		}
-		return
+		if wait > maxRetryAfter {
+			return 0, attempts, fmt.Errorf("rate limited, retry_after %ds", tooMany.RetryAfter)
+		}
+		b.limit.pause(chatID, wait)
+		b.log.With(slog.Int64("chat_id", chatID), slog.Int("retry_after", tooMany.RetryAfter)).Warn("rate limited by telegram")
+		if sleepErr := sleepCtx(ctx, wait); sleepErr != nil {
+			return 0, attempts, sleepErr
+		}
+		attempts++
+		messageID, err = b.send(ctx, chatID, threadID, text, true)
+		if err == nil {
+			return messageID, attempts, nil
+		}
+		return 0, attempts, err
 	}
 
+	// most other failures are markup the parser does not accept
+	b.log.With(slog.Int64("chat_id", chatID)).Warn("sending message", sl.Err(err))
+	attempts++
+	messageID, plainErr := b.send(ctx, chatID, threadID, removeMarkup(text), false)
+	if plainErr != nil {
+		return 0, attempts, plainErr
+	}
+	return messageID, attempts, nil
+}
+
+func (b *TgBot) send(ctx context.Context, chatID int64, threadID int, text string, markup bool) (int, error) {
+	params := &bot.SendMessageParams{
+		ChatID:          chatID,
+		MessageThreadID: threadID,
+		Text:            text,
+	}
+	if markup {
+		params.ParseMode = models.ParseModeMarkdown
+	}
+	message, err := b.bot.SendMessage(ctx, params)
+	if err != nil {
+		return 0, err
+	}
+	return message.ID, nil
+}
+
+// handleUpdate serves the chat commands. In a group the bot sees only the
+// commands addressed to it, which is why a chat is linked by a code sent in the
+// chat rather than by typing its identifier somewhere else.
+func (b *TgBot) handleUpdate(ctx context.Context, _ *bot.Bot, update *models.Update) {
+	if update.Message == nil || b.commands == nil {
+		return
+	}
+	chat := chatInfo(update.Message)
+	cmd, args := extractCommand(update.Message.Text)
+
+	var reply string
 	switch cmd {
 	case "start":
-		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.subscribe(update)}
-	case "invite":
-		if b.isAdmin(update) {
-			code := generatePinCode()
-			b.mu.Lock()
-			b.invites = append(b.invites, code)
-			b.mu.Unlock()
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: code}
-		}
-	case "clear":
-		if b.isAdmin(update) {
-			b.mu.Lock()
-			b.invites = []string{}
-			b.mu.Unlock()
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Invite codes cleared"}
-		}
-	case "list":
-		if b.isAdmin(update) {
-			b.mu.RLock()
-			msg := "Invite codes:\n"
-			for _, code := range b.invites {
-				msg += fmt.Sprintf("%v\n", code)
-			}
-			b.mu.RUnlock()
-			b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
-		}
+		reply = b.commands.StartChat(chat, args)
+	case "link":
+		reply = b.commands.LinkChat(chat, args)
 	case "stop":
-		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: b.unsubscribe(update)}
+		reply = b.commands.StopChat(chat)
+	case "status":
+		reply = b.commands.StatusChat(chat)
 	case "test":
-		msg := fmt.Sprintf("*%v*: `%v`\n %v", "MONITOR", "Warn", "This is a test notification, relax")
-		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: msg}
+		reply = "This is a test notification, relax"
+	case "":
+		// a bare code in a private chat links that chat
+		if chat.IsPrivate() && looksLikeCode(update.Message.Text) {
+			reply = b.commands.LinkChat(chat, update.Message.Text)
+		}
 	default:
-		b.send <- MessageContent{ChatID: update.Message.Chat.ID, Text: "Unknown command"}
-	}
-}
-
-// eventPump sending events to subscribers filtered by role and username
-func (b *TgBot) eventPump() {
-	for event := range b.event {
-		b.mu.RLock()
-		recipients := make([]int64, 0, len(b.users))
-		for _, user := range b.users {
-			if !user.IsActive() {
-				continue
-			}
-			// username targeting: deliver only to the specified user
-			if event.Username != "" {
-				if user.Username == event.Username {
-					recipients = append(recipients, user.UserID)
-				}
-				continue
-			}
-			// role filtering: "admin" messages go to admins only, others go to everyone
-			if event.Role == entity.RoleAdmin && !user.IsAdmin() {
-				continue
-			}
-			recipients = append(recipients, user.UserID)
-		}
-		b.mu.RUnlock()
-		for _, chatID := range recipients {
-			b.sendMessage(chatID, event.Text)
+		if chat.IsPrivate() {
+			reply = "Unknown command. Use start, link CODE, status or stop"
 		}
 	}
-}
-
-// sendPump sending messages to users
-func (b *TgBot) sendPump() {
-	for event := range b.send {
-		go b.sendMessage(event.ChatID, event.Text)
+	if reply == "" {
+		return
+	}
+	if _, err := b.send(ctx, chat.ChatID, chat.ThreadID, reply, false); err != nil {
+		b.log.Error("sending reply", sl.Err(err))
 	}
 }
 
-// sendMessage common routine to send a message via bot API
-func (b *TgBot) sendMessage(id int64, text string) {
-	_, err := b.bot.SendMessage(context.Background(), &bot.SendMessageParams{
-		ChatID:    id,
-		Text:      text,
-		ParseMode: models.ParseModeMarkdown,
-	})
-	if err != nil {
-		b.log.Warn("sending message", sl.Err(err))
-		_, err = b.bot.SendMessage(context.Background(), &bot.SendMessageParams{
-			ChatID: id,
-			Text:   fmt.Sprintf("This message caused an error:\n%v", removeMarkup(text)),
-		})
-		if err != nil {
-			b.log.Error("sending no markup message", sl.Err(err))
-			_, err = b.bot.SendMessage(context.Background(), &bot.SendMessageParams{
-				ChatID: id,
-				Text:   fmt.Sprintf("Error: %v", err),
-			})
-			if err != nil {
-				b.log.Error("sending message", sl.Err(err))
-			}
-		}
+func chatInfo(message *models.Message) *entity.ChatInfo {
+	chat := &entity.ChatInfo{
+		ChatID:   message.Chat.ID,
+		ThreadID: message.MessageThreadID,
+		Title:    message.Chat.Title,
+		Username: message.Chat.Username,
 	}
-}
-
-func (b *TgBot) SendEventMessage(em *entity.EventMessage) error {
-	msg := fmt.Sprintf("*%v*: `#%v`\n", em.Type, em.Subject)
-	if em.Text != "" {
-		msg += fmt.Sprintf("%v\n", escapeText(em.Text))
+	if chat.Title == "" {
+		chat.Title = strings.TrimSpace(message.Chat.FirstName + " " + message.Chat.LastName)
 	}
-	if em.Payload != nil {
-		payload := fmt.Sprintf("%v\n", em.Payload)
-		msg += fmt.Sprintf("```\n%v\n```", escapeCode(payload))
+	chat.Kind = entity.ChannelKind(chat.ChatID, chat.ThreadID)
+	if message.From != nil {
+		chat.ActorID = message.From.ID
+		chat.ActorUsername = message.From.Username
 	}
-
-	role := em.Role
-	if role == "" {
-		role = entity.RoleUser
-	}
-
-	b.event <- MessageContent{
-		Text:     msg,
-		Role:     role,
-		Username: em.Username,
-	}
-	return nil
+	return chat
 }

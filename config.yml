@@ -11,7 +11,16 @@ mongo:
   port: 27017
   user: postman
   password: pass
-  database: evsys
+  database: mittere
 telegram:
   enabled: false
   api_key: telegram-api-key
+  # messages allowed to one chat per rate_window seconds
+  rate_limit: 20
+  rate_window: 60
+events:
+  # how long the delivery journal is kept
+  ttl_days: 90
+link:
+  # how long a chat linking code stays usable
+  code_ttl_minutes: 30

@@ -1,281 +1,346 @@
-# Mittere API Documentation
+# Mittere API
 
-Base URL: `http://{bind_ip}:{port}` (default: `http://127.0.0.1:9800`)
+Базовый адрес: `http://{bind_ip}:{port}` (по умолчанию `http://127.0.0.1:9800`).
 
-## Authentication
+Версия 2. Сервис рассылает уведомления в Telegram по **темам**: отправитель
+указывает тему, сервис находит привязанные к ней **каналы** (личный чат, группа
+или тема форума) и отправляет в каждый, после чего отвечает тем, что
+действительно произошло.
 
-All endpoints require a Bearer token in the `Authorization` header:
+## Что изменилось по сравнению с v1
+
+| v1 | v2 |
+|---|---|
+| одна коллекция `subscriptions`, где подписчик, получатель и отправитель — один `User` | `channels`, `topics`, `subscriptions` (тема ↔ канал), `senders` |
+| маршрутизация по роли `admin`/`user` или по username | маршрутизация по теме; личный чат — такой же канал |
+| только личные чаты | личные чаты, группы и темы форумов (`message_thread_id`) |
+| `200 OK` до фактической отправки | ответ после отправки, с результатом по каждому получателю |
+| один `auth_token` даёт всё | токен `send` (только отправка) и токен `admin` (управление) |
+| нет журнала | коллекция `events` с историей доставки, TTL 90 дней |
+| `/users/` | `/senders/` (отправители) и `/channels/` (получатели) |
+
+Миграция выполняется при первом запуске: документы v1 копируются в
+`users_v1`, каждый подписчик с Telegram ID становится личным каналом, его
+`subscription_type` — темой, подписчики дополнительно подписываются на тему
+`default` (а администраторы и на `admin`), пользователи с токеном становятся
+отправителями. Старый `POST /tg/msg` продолжает работать.
+
+## Аутентификация
+
+Все запросы, кроме `GET /health`, требуют заголовок:
 
 ```
 Authorization: Bearer <token>
 ```
 
-Tokens are validated against:
-1. The static `auth_token` from config (matches as the `system` user)
-2. User records in MongoDB (matched by `token` field)
+Токены двух уровней:
 
-## Response Format
+| Уровень | Откуда | Что можно |
+|---|---|---|
+| `admin` | `auth_token` из конфигурации или отправитель со `scope: admin` | всё |
+| `send` | отправитель со `scope: send` | только `POST /messages`, `POST /tg/msg`, `GET /tg/test`, и только по темам из `allowed_topics` (пустой список — любая тема) |
 
-All responses follow this structure:
+Запрос с токеном `send` к управляющим ручкам получает `403`.
+
+## Формат ответа
 
 ```json
 {
   "data": {},
   "success": true,
   "status_message": "Success",
-  "timestamp": "2024-01-15T10:30:00Z"
+  "timestamp": "2026-11-13T10:30:00Z"
 }
 ```
 
-On error:
-
-```json
-{
-  "success": false,
-  "status_message": "Error description",
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
+При ошибке `success: false`, причина — в `status_message`; у неудачной отправки
+в `data` всё равно лежит событие с разбором по получателям.
 
 ---
 
-## Telegram Notifications
+## Отправка сообщений
 
-### Send Notification
+### POST /messages
 
-Send a message to Telegram subscribers.
+Отправляет сообщение в тему. Ответ приходит **после** того, как сервис попытался
+доставить его каждому получателю.
 
-```
-POST /tg/msg
-```
+| Поле | Тип | Обяз. | Описание |
+|---|---|---|---|
+| `topic` | string | нет | код темы, например `marketing.shipments`; без темы — `default` |
+| `type` | string | да | категория события (`alert`, `notification`, `report`) |
+| `subject` | string | нет | подзаголовок; если пусто, выводится код темы |
+| `text` | string | нет | текст сообщения |
+| `payload` | any | нет | произвольные данные, выводятся блоком кода |
+| `dedup_key` | string | нет | ключ повтора: при повторной отправке с тем же ключом сервис дошлёт только тем, кто не получил |
 
-**Request body:**
+Код темы — слова в нижнем регистре, разделённые `.`, `_` или `-`.
 
-| Field      | Type   | Required | Description                                                                 |
-|------------|--------|----------|-----------------------------------------------------------------------------|
-| `type`     | string | yes      | Event category (e.g. `"alert"`, `"notification"`, `"report"`)               |
-| `subject`  | string | yes      | Event topic (e.g. `"deployment"`, `"monitoring"`)                           |
-| `role`     | string | no       | Target role: `"user"` (default, all subscribers) or `"admin"` (admins only) |
-| `username` | string | no       | If set, deliver only to this Telegram username                              |
-| `text`     | string | no       | Message body                                                                |
-| `payload`  | any    | no       | Arbitrary structured data (rendered as code block)                          |
-| `time`     | string | no       | ISO 8601 timestamp                                                          |
+**Коды ответа** — главное, на что смотрит вызывающая сторона:
 
-**Routing rules:**
-- No `role` or `role: "user"` — delivered to all active subscribers (admins + users)
-- `role: "admin"` — delivered only to admin subscribers
-- `username` set — delivered only to the subscriber with that Telegram username (overrides role filtering)
+| Код | Что значит |
+|---|---|
+| `200` | доставлено всем получателям |
+| `207` | доставлено части получателей (разбор — в `data.deliveries`) |
+| `409` | в теме нет ни одного активного канала, сообщение никто не получил |
+| `502` | не доставлено никому |
+| `404` | тема неизвестна |
+| `403` | тема не разрешена этому токену |
+| `400` | не удалось разобрать запрос |
 
-**Example:**
+1С помечает уведомление доставленным по `200`, поэтому всё, что не доставлено
+полностью, отвечает не-`200`, и уведомление уйдёт в следующий цикл отправки.
+Чтобы повтор не задвоил сообщения у тех, кто их уже получил, передавайте
+`dedup_key` (например, хэш содержимого из `InformationRegister.Notifications`).
+
+**Пример:**
 
 ```bash
-curl -X POST http://127.0.0.1:9800/tg/msg \
-  -H "Authorization: Bearer <token>" \
+curl -X POST http://127.0.0.1:9800/messages \
+  -H "Authorization: Bearer <send-token>" \
   -H "Content-Type: application/json" \
   -d '{
+    "topic": "marketing.shipments",
     "type": "alert",
-    "subject": "deployment",
-    "text": "Service v1.2.3 deployed to production",
-    "payload": {"version": "1.2.3", "env": "prod"}
+    "text": "Накладна 42: прострочено 3 дні",
+    "payload": {"doc": "42", "days": 3},
+    "dedup_key": "shipment-42-2026-11-13"
   }'
 ```
 
-**Telegram message format:**
-
-```
-*alert*: `#deployment`
-Service v1.2.3 deployed to production
-```json
-{"version":"1.2.3","env":"prod"}
-```
-```
-
-**Response:** `200 OK`
+**Ответ (`207`, одному из двух получателей не дошло):**
 
 ```json
 {
-  "success": true,
-  "status_message": "Success",
-  "timestamp": "2024-01-15T10:30:00Z"
+  "data": {
+    "event_id": "9f1c2b3a4d5e6f7a8b9c0d1e",
+    "topic": "marketing.shipments",
+    "type": "alert",
+    "status": "partial",
+    "created_at": "2026-11-13T10:30:00Z",
+    "finished_at": "2026-11-13T10:30:01Z",
+    "deliveries": [
+      {
+        "channel_id": "-1001234567890",
+        "chat_id": -1001234567890,
+        "status": "sent",
+        "attempts": 1,
+        "message_id": 345,
+        "sent_at": "2026-11-13T10:30:01Z"
+      },
+      {
+        "channel_id": "-1009876543210",
+        "chat_id": -1009876543210,
+        "status": "failed",
+        "attempts": 2,
+        "error": "bot is not a member of the chat"
+      }
+    ]
+  },
+  "success": false,
+  "status_message": "Delivered to some recipients only",
+  "timestamp": "2026-11-13T10:30:01Z"
 }
 ```
 
-### Send Test Event
+Статусы события: `delivered`, `partial`, `failed`, `no_recipients`, `pending`.
+Статусы доставки: `sent`, `failed`, `pending`.
 
-Sends a hardcoded test notification to all subscribers.
+Ответ Telegram `429` обрабатывается: сервис выжидает `retry_after` и повторяет
+отправку один раз; кроме того, на каждый чат действует ограничение (по
+умолчанию 20 сообщений в минуту, `telegram.rate_limit` и `telegram.rate_window`).
 
-```
-GET /tg/test
-```
+### POST /tg/msg — устаревший
 
-**Example:**
+Оставлен, чтобы существующие рассылки 1С не отвалились. Тело — как в v1
+(`type`, `subject`, `role`, `username`, `text`, `payload`), дополнительно
+принимает `topic` и `dedup_key`. Маршрутизация:
+
+- без `topic` и без `role` — тема `default`;
+- `role: admin` — тема `admin`;
+- `username` — доставка в каналы этого Telegram-пользователя, независимо от темы.
+
+Коды ответа — те же, что у `POST /messages`.
+
+### GET /tg/test — устаревший
+
+Отправляет тестовое сообщение в тему `default` или в тему из параметра
+`?topic=`.
+
+---
+
+## Темы
+
+Управление темами, уровень `admin`.
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/topics` | список тем |
+| POST | `/topics` | создать тему |
+| GET | `/topics/{code}` | одна тема |
+| PUT | `/topics/{code}` | изменить название и описание |
+| DELETE | `/topics/{code}` | удалить тему и её подписки |
+
+Поля темы: `code` (обяз.), `title`, `description`, `bot` (на будущее, для
+рассылки разными ботами). Темы `default` и `admin` удалить нельзя.
 
 ```bash
-curl http://127.0.0.1:9800/tg/test \
-  -H "Authorization: Bearer <token>"
+curl -X POST http://127.0.0.1:9800/topics \
+  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{"code": "marketing.shipments", "title": "Маркетингові відправки"}'
 ```
 
 ---
 
-## Users
+## Каналы
 
-Manage users. A user can be API-only (with a token for HTTP auth), Telegram-only (with a `user_id` for receiving messages), or both. All users are stored in the `subscriptions` MongoDB collection.
+Канал — чат, куда идёт доставка: личный чат (`private`), группа (`group`) или
+тема форума (`forum`). Идентификатор канала — `chat_id`, а для темы форума
+`chat_id:thread_id`. Уровень `admin`.
 
-### User Model
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/channels` | список каналов с их темами |
+| POST | `/channels/link` | выдать код привязки |
+| GET | `/channels/{id}` | один канал |
+| PUT | `/channels/{id}` | изменить `state`, `title`, список `topics` |
+| DELETE | `/channels/{id}` | удалить канал и его подписки |
 
-| Field               | Type   | Description                                         |
-|---------------------|--------|-----------------------------------------------------|
-| `username`          | string | Unique identifier (required)                        |
-| `user_id`           | int64  | Telegram user ID (0 if API-only)                    |
-| `name`              | string | Display name                                        |
-| `email`             | string | Email address                                       |
-| `token`             | string | API authentication token (redacted in responses)    |
-| `role`              | string | `"admin"` or `"user"`                               |
-| `state`             | string | `"await"`, `"active"`, or `"disabled"`              |
-| `is_verified`       | bool   | Whether invite code was confirmed                   |
-| `subscription_type` | string | Subscription category (default: `"status"`)         |
+Поля канала: `channel_id`, `chat_id`, `thread_id`, `kind`, `title`, `username`,
+`state` (`active`, `await`, `disabled`), `linked_at`, `linked_by`, `topics`.
 
-### List Users
+### Привязка чата кодом
 
-```
-GET /users/
-```
+`chat_id` руками нигде не вводится. Порядок такой:
 
-Returns all users. Token fields are redacted in the response.
-
-**Example:**
-
-```bash
-curl http://127.0.0.1:9800/users/ \
-  -H "Authorization: Bearer <token>"
-```
-
-**Response:** `200 OK`
+1. `POST /channels/link` с телом `{"topic": "marketing.shipments"}` (тему можно
+   не указывать) — в ответе код и срок его действия:
 
 ```json
 {
-  "data": [
-    {
-      "username": "ci-bot",
-      "name": "CI Bot",
-      "email": "ci@example.com",
-      "role": "user",
-      "state": "active",
-      "is_verified": true
-    },
-    {
-      "user_id": 123456789,
-      "username": "johndoe",
-      "role": "admin",
-      "state": "active",
-      "is_verified": true,
-      "subscription_type": "status"
-    }
-  ],
-  "success": true,
-  "status_message": "Success",
-  "timestamp": "2024-01-15T10:30:00Z"
+  "data": {
+    "code": "N9PE-RYQG",
+    "topic": "marketing.shipments",
+    "created_at": "2026-11-13T10:30:00Z",
+    "expires_at": "2026-11-13T11:00:00Z"
+  },
+  "success": true
 }
 ```
 
-### Get User
+2. Бот добавляется в нужный чат, и в этом чате ему отправляют команду:
 
 ```
-GET /users/{username}
+/link@имя_бота N9PE-RYQG
 ```
 
-Returns a single user by username. Token is redacted.
+В теме форума команду отправляют прямо в этой теме — тогда каналом становится
+именно она. В личном чате достаточно отправить сам код сообщением или
+`/start N9PE-RYQG`.
 
-**Example:**
+3. Сервис запоминает `chat_id` и `thread_id` из этого сообщения, делает канал
+   активным и подписывает его на тему из кода. Код одноразовый и сгорает через
+   `link.code_ttl_minutes` (по умолчанию 30 минут).
 
-```bash
-curl http://127.0.0.1:9800/users/ci-bot \
-  -H "Authorization: Bearer <token>"
-```
+Так обходится privacy mode: боту в группе видны только адресованные ему команды,
+и ничего, кроме них, читать не требуется.
 
-**Response:** `200 OK` / `404 Not Found`
+### Команды бота
 
-### Create User
-
-```
-POST /users/
-```
-
-**Request body:**
-
-| Field      | Type   | Required | Description                          |
-|------------|--------|----------|--------------------------------------|
-| `username` | string | yes      | Unique username                      |
-| `name`     | string | no       | Display name                         |
-| `email`    | string | no       | Email address                        |
-| `token`    | string | no       | API auth token (omit for TG-only)    |
-| `role`     | string | no       | `"admin"` or `"user"` (default)      |
-| `state`    | string | no       | `"active"`, `"await"`, `"disabled"`  |
-| `user_id`  | int64  | no       | Telegram user ID (omit for API-only) |
-
-**Example — API-only user:**
-
-```bash
-curl -X POST http://127.0.0.1:9800/users/ \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "ci-bot",
-    "name": "CI Bot",
-    "token": "secret-token-for-ci-bot",
-    "role": "user",
-    "state": "active"
-  }'
-```
-
-**Response:** `201 Created`
-
-### Update User
-
-```
-PUT /users/{username}
-```
-
-Updates an existing user. The `username` path parameter takes precedence over any username in the body.
-
-**Example:**
-
-```bash
-curl -X PUT http://127.0.0.1:9800/users/ci-bot \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "CI Bot Updated",
-    "role": "admin"
-  }'
-```
-
-**Response:** `200 OK`
-
-### Delete User
-
-```
-DELETE /users/{username}
-```
-
-**Example:**
-
-```bash
-curl -X DELETE http://127.0.0.1:9800/users/ci-bot \
-  -H "Authorization: Bearer <token>"
-```
-
-**Response:** `200 OK`
+| Команда | Где | Что делает |
+|---|---|---|
+| `/link КОД` | группа, форум, личный чат | привязывает чат к теме из кода |
+| `/start` | личный чат | регистрирует чат, ждёт кода |
+| `/start КОД` | личный чат | то же, что `/link` |
+| `/status` | везде | показывает канал, его состояние и темы |
+| `/stop` | везде | выключает доставку в этот чат (подписки сохраняются) |
+| `/test` | везде | отвечает тестовым сообщением |
 
 ---
 
-## Error Codes
+## Отправители
 
-| Status | Meaning                                    |
-|--------|--------------------------------------------|
-| 200    | Success                                    |
-| 201    | Created (user creation)                    |
-| 400    | Bad request (invalid JSON or validation)   |
-| 401    | Unauthorized (missing or invalid token)    |
-| 404    | Not found                                  |
-| 500    | Internal server error                      |
+Клиенты API: токен и темы, в которые ему можно писать. Уровень `admin`.
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/senders` | список (токены скрыты) |
+| POST | `/senders` | создать; токен возвращается один раз, при создании |
+| GET | `/senders/{username}` | один отправитель (токен скрыт) |
+| PUT | `/senders/{username}` | изменить |
+| DELETE | `/senders/{username}` | удалить |
+
+Поля: `username` (обяз.), `name`, `token` (если не задан — сервис сгенерирует),
+`scope` (`send` по умолчанию или `admin`), `allowed_topics` (пустой список —
+любая тема), `state` (`active`, `disabled`).
+
+```bash
+curl -X POST http://127.0.0.1:9800/senders \
+  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{"username": "1c", "scope": "send", "allowed_topics": ["marketing.shipments"]}'
+```
+
+---
+
+## Журнал
+
+Уровень `admin`.
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/events` | список событий, новые первыми |
+| GET | `/events/{id}` | одно событие с разбором доставки |
+
+Параметры `/events`: `topic`, `status`, `from`, `to` (RFC 3339 или `ГГГГ-ММ-ДД`),
+`limit` (по умолчанию 100, максимум 500).
+
+```bash
+curl -H "Authorization: Bearer <admin-token>" \
+  "http://127.0.0.1:9800/events?topic=marketing.shipments&status=failed&from=2026-11-01"
+```
+
+События хранятся 90 дней (`events.ttl_days`), дальше удаляются TTL-индексом.
+
+---
+
+## Состояние
+
+### GET /health
+
+Без токена — краткое состояние (для мониторинга), с токеном `admin` —
+дополнительно счётчики и последние ошибки доставки. Отвечает `503`, когда
+состояние не `ok`.
+
+```json
+{
+  "data": {
+    "status": "ok",
+    "uptime": "72h13m5s",
+    "bot": "mittere_bot",
+    "bot_alive": true,
+    "database": "ok",
+    "channels": 12,
+    "topics": 5,
+    "failures_24h": 0
+  },
+  "success": true
+}
+```
+
+---
+
+## Коды ошибок
+
+| Код | Значение |
+|---|---|
+| 200 | успех |
+| 201 | создано |
+| 207 | доставлено части получателей |
+| 400 | неверный запрос |
+| 401 | нет токена или токен неизвестен |
+| 403 | не хватает прав: нужен `admin`, либо тема не разрешена токену |
+| 404 | не найдено (тема, канал, отправитель, событие) |
+| 409 | в теме нет активных каналов |
+| 500 | внутренняя ошибка |
+| 502 | не доставлено никому |
+| 503 | сервис не в порядке (`/health`) |

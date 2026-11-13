@@ -15,7 +15,7 @@ import (
 )
 
 type Authenticate interface {
-	AuthenticateByToken(token string) (*entity.User, error)
+	AuthenticateByToken(token string) (*entity.Sender, error)
 }
 
 func New(log *slog.Logger, auth Authenticate) func(next http.Handler) http.Handler {
@@ -75,16 +75,17 @@ func New(log *slog.Logger, auth Authenticate) func(next http.Handler) http.Handl
 				return
 			}
 
-			user, err := auth.AuthenticateByToken(token)
+			sender, err := auth.AuthenticateByToken(token)
 			if err != nil {
 				logger = logger.With(sl.Err(err))
 				authFailed(ww, r, "Unauthorized: token not found")
 				return
 			}
 			logger = logger.With(
-				slog.String("user", user.Username),
+				slog.String("sender", sender.Username),
+				slog.String("scope", sender.Scope),
 			)
-			ctx := cont.PutUser(r.Context(), user)
+			ctx := cont.PutSender(r.Context(), sender)
 
 			ww.Header().Set("X-Request-ID", id)
 			next.ServeHTTP(ww, r.WithContext(ctx))
@@ -94,7 +95,40 @@ func New(log *slog.Logger, auth Authenticate) func(next http.Handler) http.Handl
 	}
 }
 
+// AdminOnly rejects senders that hold a send token: publishing a message and
+// administering the service are two different rights.
+func AdminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sender := cont.GetSender(r.Context())
+		if !sender.IsAdmin() {
+			render.Status(r, http.StatusForbidden)
+			render.JSON(w, r, response.Error("Admin token required"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func authFailed(w http.ResponseWriter, r *http.Request, message string) {
 	render.Status(r, http.StatusUnauthorized)
 	render.JSON(w, r, response.Error(message))
+}
+
+// Optional authenticates when a token is present and lets the request through
+// either way. It serves the health endpoint, which monitoring reads without a
+// token while an administrator gets the full picture.
+func Optional(auth Authenticate) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			const bearerPrefix = "Bearer "
+			header := r.Header.Get("Authorization")
+			if auth != nil && strings.HasPrefix(header, bearerPrefix) {
+				token := strings.TrimPrefix(header, bearerPrefix)
+				if sender, err := auth.AuthenticateByToken(token); err == nil {
+					r = r.WithContext(cont.PutSender(r.Context(), sender))
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

@@ -7,22 +7,36 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"mittere/entity"
 	"mittere/internal/config"
 	"time"
 )
 
+// Collection names of the v2 schema. The v1 schema kept subscribers, senders
+// and recipients as users in a single "subscriptions" collection; the migration
+// copies those to "users_v1" and rebuilds them as channels and subscriptions.
 const (
-	usersCollection = "subscriptions"
-	connectTimeout  = 10 * time.Second
-	queryTimeout    = 5 * time.Second
+	channelsCollection      = "channels"
+	topicsCollection        = "topics"
+	subscriptionsCollection = "subscriptions"
+	sendersCollection       = "senders"
+	eventsCollection        = "events"
+	linkCodesCollection     = "link_codes"
+	migrationsCollection    = "migrations"
+	legacyUsersCollection   = "users_v1"
+
+	connectTimeout = 10 * time.Second
+	queryTimeout   = 5 * time.Second
 )
 
 type MongoDB struct {
-	client   *mongo.Client
-	database string
+	client       *mongo.Client
+	database     string
+	eventsTTL    time.Duration
+	legacyExists bool
 }
 
+// NewMongoClient connects to MongoDB and prepares the schema. It returns a nil
+// client without an error when MongoDB is disabled in the configuration.
 func NewMongoClient(conf *config.Config) (*MongoDB, error) {
 	if !conf.Mongo.Enabled {
 		return nil, nil
@@ -53,10 +67,15 @@ func NewMongoClient(conf *config.Config) (*MongoDB, error) {
 		return nil, fmt.Errorf("mongodb ping error: %w", err)
 	}
 
-	return &MongoDB{
-		client:   client,
-		database: conf.Mongo.Database,
-	}, nil
+	return NewMongoDB(client, conf.Mongo.Database, time.Duration(conf.Events.TTLDays)*24*time.Hour), nil
+}
+
+// NewMongoDB wraps an already connected client; used by tests.
+func NewMongoDB(client *mongo.Client, database string, eventsTTL time.Duration) *MongoDB {
+	if eventsTTL <= 0 {
+		eventsTTL = 90 * 24 * time.Hour
+	}
+	return &MongoDB{client: client, database: database, eventsTTL: eventsTTL}
 }
 
 func (m *MongoDB) Close() error {
@@ -65,8 +84,13 @@ func (m *MongoDB) Close() error {
 	return m.client.Disconnect(ctx)
 }
 
-func (m *MongoDB) collection() *mongo.Collection {
-	return m.client.Database(m.database).Collection(usersCollection)
+// Ping reports whether the database answers.
+func (m *MongoDB) Ping(ctx context.Context) error {
+	return m.client.Ping(ctx, nil)
+}
+
+func (m *MongoDB) collection(name string) *mongo.Collection {
+	return m.client.Database(m.database).Collection(name)
 }
 
 func (m *MongoDB) findError(err error) error {
@@ -76,122 +100,67 @@ func (m *MongoDB) findError(err error) error {
 	return fmt.Errorf("mongodb find error: %w", err)
 }
 
-// GetUserByToken returns a user by authentication token
-func (m *MongoDB) GetUserByToken(token string) (*entity.User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	filter := bson.M{"token": token}
-	result := m.collection().FindOne(ctx, filter)
-	if result.Err() != nil {
-		return nil, m.findError(result.Err())
-	}
-	user := &entity.User{}
-	if err := result.Decode(user); err != nil {
-		return nil, fmt.Errorf("mongodb decode error: %w", err)
-	}
-	return user, nil
+func timeoutCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), queryTimeout)
 }
 
-// GetUsers returns all users
-func (m *MongoDB) GetUsers() ([]entity.User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	cursor, err := m.collection().Find(ctx, bson.D{})
-	if err != nil {
-		return nil, err
+// Prepare creates the indexes of the v2 schema. It is safe to call repeatedly.
+func (m *MongoDB) Prepare(ctx context.Context) error {
+	specs := []struct {
+		collection string
+		model      mongo.IndexModel
+	}{
+		{channelsCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "channel_id", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("channel_id_unique"),
+		}},
+		{channelsCollection, mongo.IndexModel{
+			Keys: bson.D{{Key: "chat_id", Value: 1}},
+		}},
+		{topicsCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "code", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("code_unique"),
+		}},
+		{subscriptionsCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "topic_code", Value: 1}, {Key: "channel_id", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("topic_channel_unique"),
+		}},
+		{sendersCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "username", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("username_unique"),
+		}},
+		{sendersCollection, mongo.IndexModel{
+			Keys: bson.D{{Key: "token", Value: 1}},
+		}},
+		{eventsCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "event_id", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("event_id_unique"),
+		}},
+		{eventsCollection, mongo.IndexModel{
+			Keys: bson.D{{Key: "topic", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		{eventsCollection, mongo.IndexModel{
+			Keys: bson.D{{Key: "dedup_key", Value: 1}},
+			Options: options.Index().SetName("dedup_key_unique").SetUnique(true).
+				SetPartialFilterExpression(bson.M{"dedup_key": bson.M{"$exists": true}}),
+		}},
+		{eventsCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "created_at", Value: 1}},
+			Options: options.Index().SetName("events_ttl").SetExpireAfterSeconds(int32(m.eventsTTL.Seconds())),
+		}},
+		{linkCodesCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "code", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("code_unique"),
+		}},
+		{linkCodesCollection, mongo.IndexModel{
+			Keys:    bson.D{{Key: "expires_at", Value: 1}},
+			Options: options.Index().SetName("link_codes_ttl").SetExpireAfterSeconds(3600),
+		}},
 	}
-	var users []entity.User
-	if err = cursor.All(ctx, &users); err != nil {
-		return nil, err
-	}
-	return users, nil
-}
-
-// GetUserByUsername returns a user by username
-func (m *MongoDB) GetUserByUsername(username string) (*entity.User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	filter := bson.M{"username": username}
-	result := m.collection().FindOne(ctx, filter)
-	if result.Err() != nil {
-		return nil, m.findError(result.Err())
-	}
-	user := &entity.User{}
-	if err := result.Decode(user); err != nil {
-		return nil, fmt.Errorf("mongodb decode error: %w", err)
-	}
-	return user, nil
-}
-
-// GetUserByTelegramID returns a user by Telegram user ID
-func (m *MongoDB) GetUserByTelegramID(id int64) (*entity.User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	filter := bson.D{{Key: "user_id", Value: id}}
-	var user entity.User
-	err := m.collection().FindOne(ctx, filter).Decode(&user)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, nil
+	for _, spec := range specs {
+		if _, err := m.collection(spec.collection).Indexes().CreateOne(ctx, spec.model); err != nil {
+			return fmt.Errorf("index on %s: %w", spec.collection, err)
 		}
-		return nil, err
-	}
-	return &user, nil
-}
-
-// CreateUser inserts a new user
-func (m *MongoDB) CreateUser(user *entity.User) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	_, err := m.collection().InsertOne(ctx, user)
-	return err
-}
-
-// UpdateUser updates an existing user by username
-func (m *MongoDB) UpdateUser(user *entity.User) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	filter := bson.M{"username": user.Username}
-	update := bson.M{"$set": user}
-	result, err := m.collection().UpdateOne(ctx, filter, update)
-	if err != nil {
-		return err
-	}
-	if result.MatchedCount == 0 {
-		return fmt.Errorf("user not found")
-	}
-	return nil
-}
-
-// UpsertUser upserts a user by Telegram user ID
-func (m *MongoDB) UpsertUser(user *entity.User) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	filter := bson.D{{Key: "user_id", Value: user.UserID}}
-	update := bson.M{"$set": user}
-	_, err := m.collection().UpdateOne(ctx, filter, update, options.Update().SetUpsert(true))
-	return err
-}
-
-// DeleteUser deletes a user by username
-func (m *MongoDB) DeleteUser(username string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-
-	filter := bson.M{"username": username}
-	result, err := m.collection().DeleteOne(ctx, filter)
-	if err != nil {
-		return err
-	}
-	if result.DeletedCount == 0 {
-		return fmt.Errorf("user not found")
 	}
 	return nil
 }

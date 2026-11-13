@@ -1,0 +1,216 @@
+package core
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"mittere/entity"
+	"mittere/internal/lib/sl"
+	"time"
+)
+
+// Publish routes a message to the channels subscribed to its topic, sends it,
+// and returns the journal record with the outcome for every recipient. The call
+// returns only after every delivery has been attempted, so the caller learns
+// what actually happened instead of being told the message was accepted.
+func (c *Core) Publish(ctx context.Context, msg *entity.Message, sender *entity.Sender) (*entity.Event, error) {
+	if c.repo == nil {
+		return nil, ErrNoRepository
+	}
+	if c.transport == nil {
+		return nil, ErrNoTransport
+	}
+
+	topic := ResolveTopic(msg)
+	if err := entity.ValidateTopicCode(topic); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownTopic, err)
+	}
+	if sender != nil && !sender.MayPublish(topic) {
+		return nil, ErrForbidden
+	}
+	known, err := c.repo.GetTopic(topic)
+	if err != nil {
+		return nil, fmt.Errorf("read topic: %w", err)
+	}
+	if known == nil {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownTopic, topic)
+	}
+
+	recipients, err := c.recipients(msg, topic)
+	if err != nil {
+		return nil, err
+	}
+
+	event, done, err := c.prepareEvent(msg, topic, sender, recipients)
+	if err != nil {
+		return nil, err
+	}
+	if done {
+		return event, nil
+	}
+
+	text := c.transport.Format(msg)
+	log := c.log.With(slog.String("event_id", event.EventID), slog.String("topic", topic))
+
+	for i := range event.Deliveries {
+		delivery := &event.Deliveries[i]
+		if delivery.IsSent() {
+			continue
+		}
+		messageID, attempts, sendErr := c.transport.Send(ctx, delivery.ChatID, delivery.ThreadID, text)
+		delivery.Attempts += attempts
+		if sendErr != nil {
+			delivery.Status = entity.DeliveryFailed
+			delivery.Error = sendErr.Error()
+			log.With(slog.String("channel", delivery.ChannelID)).Error("delivery failed", sl.Err(sendErr))
+			continue
+		}
+		sentAt := time.Now().UTC()
+		delivery.Status = entity.DeliverySent
+		delivery.Error = ""
+		delivery.MessageID = messageID
+		delivery.SentAt = &sentAt
+	}
+
+	event.Recalculate()
+	finishedAt := time.Now().UTC()
+	event.FinishedAt = &finishedAt
+	if err = c.repo.SaveEvent(event); err != nil {
+		log.Error("save event", sl.Err(err))
+	}
+	log.With(slog.String("status", event.Status), slog.Int("recipients", len(event.Deliveries))).Info("message published")
+	return event, nil
+}
+
+// ResolveTopic picks the topic of a message. Messages without a topic come from
+// the legacy endpoint: those addressed to the admin role go to the admin topic,
+// the rest to the default one.
+func ResolveTopic(msg *entity.Message) string {
+	if msg.Topic != "" {
+		return msg.Topic
+	}
+	if msg.Role == entity.RoleAdmin {
+		return entity.TopicAdmin
+	}
+	return entity.TopicDefault
+}
+
+// recipients resolves the channels a message goes to. Legacy messages aimed at
+// one username go to that person's channels, whatever the topic.
+func (c *Core) recipients(msg *entity.Message, topic string) ([]entity.Channel, error) {
+	if msg.Username != "" {
+		channels, err := c.repo.GetChannelsByUsername(msg.Username)
+		if err != nil {
+			return nil, fmt.Errorf("read channels of %s: %w", msg.Username, err)
+		}
+		return channels, nil
+	}
+	channels, err := c.repo.GetChannelsByTopic(topic)
+	if err != nil {
+		return nil, fmt.Errorf("read channels of topic %s: %w", topic, err)
+	}
+	return channels, nil
+}
+
+// prepareEvent creates the journal record, or picks up the one left by an
+// earlier call with the same dedup key. It reports done when there is nothing
+// left to send: a fully delivered event is never sent twice.
+func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Sender, recipients []entity.Channel) (*entity.Event, bool, error) {
+	var previous *entity.Event
+	if msg.DedupKey != "" {
+		found, err := c.repo.GetEventByDedupKey(msg.DedupKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("read event by dedup key: %w", err)
+		}
+		if found != nil {
+			if found.Status == entity.EventDelivered {
+				return found, true, nil
+			}
+			previous = found
+		}
+	}
+
+	event := &entity.Event{
+		EventID:   newID(),
+		Topic:     topic,
+		Type:      msg.Type,
+		Subject:   msg.Subject,
+		Text:      msg.Text,
+		Payload:   msg.Payload,
+		DedupKey:  msg.DedupKey,
+		CreatedAt: time.Now().UTC(),
+		Status:    entity.EventPending,
+	}
+	if sender != nil {
+		event.Sender = sender.Username
+	}
+	if previous != nil {
+		// keep the identifier, so a repeated call from 1C stays one event
+		event.EventID = previous.EventID
+		event.CreatedAt = previous.CreatedAt
+	}
+
+	event.Deliveries = make([]entity.Delivery, 0, len(recipients))
+	for _, channel := range recipients {
+		delivery := entity.Delivery{
+			ChannelID: channel.ChannelID,
+			ChatID:    channel.ChatID,
+			ThreadID:  channel.ThreadID,
+			Status:    entity.DeliveryPending,
+		}
+		if previous != nil {
+			// a retry only covers what did not get through
+			for i := range previous.Deliveries {
+				if previous.Deliveries[i].ChannelID == channel.ChannelID {
+					delivery.Attempts = previous.Deliveries[i].Attempts
+					if previous.Deliveries[i].IsSent() {
+						delivery = previous.Deliveries[i]
+					}
+					break
+				}
+			}
+		}
+		event.Deliveries = append(event.Deliveries, delivery)
+	}
+
+	if len(event.Deliveries) == 0 {
+		event.Status = entity.EventNoRecipients
+		finishedAt := time.Now().UTC()
+		event.FinishedAt = &finishedAt
+		if err := c.repo.SaveEvent(event); err != nil {
+			return nil, false, fmt.Errorf("save event: %w", err)
+		}
+		return event, true, nil
+	}
+
+	if err := c.repo.SaveEvent(event); err != nil {
+		return nil, false, fmt.Errorf("save event: %w", err)
+	}
+	return event, false, nil
+}
+
+// GetEvent returns one journal record.
+func (c *Core) GetEvent(eventID string) (*entity.Event, error) {
+	if c.repo == nil {
+		return nil, ErrNoRepository
+	}
+	return c.repo.GetEvent(eventID)
+}
+
+// FindEvents returns journal records matching a filter.
+func (c *Core) FindEvents(filter entity.EventFilter) ([]entity.Event, error) {
+	if c.repo == nil {
+		return nil, ErrNoRepository
+	}
+	return c.repo.FindEvents(filter)
+}
+
+func newID() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
