@@ -1,0 +1,84 @@
+name: Deploy to azno
+
+# The Dark instance on azno (notify.nomadus.net). The Wattbrews instance has
+# its own workflow on master; this one must never touch it.
+on:
+  push:
+    branches:
+      - v2
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run tests
+        run: go test -short ./...
+
+      - name: Build binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mittere ./cmd/mittere
+
+      - name: Generate configuration
+        run: |
+          cat > mittere-conf.yml << 'CONF'
+          ---
+
+          env: ${{ vars.AZNO_ENV }}
+          listen:
+            bind_ip: 127.0.0.1
+            port: ${{ vars.AZNO_LISTEN_PORT }}
+          auth_token: ${{ secrets.AZNO_AUTH_TOKEN }}
+          mongo:
+            enabled: true
+            host: 127.0.0.1
+            port: 27017
+            user: ${{ secrets.AZNO_MONGO_USER }}
+            password: ${{ secrets.AZNO_MONGO_PASSWORD }}
+            database: ${{ vars.AZNO_MONGO_DATABASE }}
+          telegram:
+            enabled: true
+            api_key: ${{ secrets.AZNO_TELEGRAM_API_KEY }}
+            rate_limit: 20
+            rate_window: 60
+          events:
+            ttl_days: 90
+          link:
+            code_ttl_minutes: 30
+          CONF
+
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.AZNO_SERVER_HOST }}
+          username: ${{ secrets.AZNO_SERVER_USER }}
+          key: ${{ secrets.AZNO_SSH_KEY }}
+          port: 22
+          source: "mittere,mittere-conf.yml"
+          target: /tmp/mittere-deploy
+
+      - name: Install and restart
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.AZNO_SERVER_HOST }}
+          username: ${{ secrets.AZNO_SERVER_USER }}
+          key: ${{ secrets.AZNO_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            sudo install -o root -g root -m 755 /tmp/mittere-deploy/mittere /usr/local/bin/mittere
+            # the configuration holds the bot token and the API tokens
+            sudo install -o root -g root -m 640 /tmp/mittere-deploy/mittere-conf.yml /etc/conf/mittere-conf.yml
+            rm -rf /tmp/mittere-deploy
+            sudo systemctl restart mittere.service
+            sleep 3
+            systemctl is-active mittere.service
