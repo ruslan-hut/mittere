@@ -47,6 +47,25 @@ func (c *Core) UpdateTopic(topic *entity.Topic) error {
 	if c.repo == nil {
 		return ErrNoRepository
 	}
+	stored, err := c.repo.GetTopic(topic.Code)
+	if err != nil {
+		return err
+	}
+	if stored == nil {
+		return fmt.Errorf("topic %s: %w", topic.Code, ErrNotFound)
+	}
+	// a field the request left out keeps its stored value, and the creation
+	// time is never rewritten by an update
+	if topic.Title == "" {
+		topic.Title = stored.Title
+	}
+	if topic.Description == "" {
+		topic.Description = stored.Description
+	}
+	if topic.Bot == "" {
+		topic.Bot = stored.Bot
+	}
+	topic.CreatedAt = stored.CreatedAt
 	return c.repo.UpdateTopic(topic)
 }
 

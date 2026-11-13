@@ -361,3 +361,55 @@ func TestUpdateChannelRejectsUnknownTopicWithoutChanging(t *testing.T) {
 		t.Error("the refused update disabled the channel anyway")
 	}
 }
+
+// TestUpdateTopicKeepsWhatWasNotSent covers a partial update of a topic:
+// renaming it must not wipe its description or its creation time.
+func TestUpdateTopicKeepsWhatWasNotSent(t *testing.T) {
+	repo := memrepo.New()
+	created := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	repo.Topics["marketing.shipments"] = entity.Topic{
+		Code:        "marketing.shipments",
+		Title:       "Відправки",
+		Description: "Нагадування по накладних",
+		Bot:         "dark_msg_bot",
+		CreatedAt:   created,
+	}
+	router := testServer(repo, memrepo.NewTransport())
+
+	payload, _ := json.Marshal(map[string]interface{}{"title": "Маркетингові відправки"})
+	request := httptest.NewRequest(http.MethodPut, "/topics/marketing.shipments", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
+	}
+
+	stored, err := repo.GetTopic("marketing.shipments")
+	if err != nil || stored == nil {
+		t.Fatalf("GetTopic() = %v, %v", stored, err)
+	}
+	if stored.Title != "Маркетингові відправки" {
+		t.Errorf("title = %q, want it updated", stored.Title)
+	}
+	if stored.Description != "Нагадування по накладних" {
+		t.Errorf("description = %q, want it kept", stored.Description)
+	}
+	if stored.Bot != "dark_msg_bot" {
+		t.Errorf("bot = %q, want it kept", stored.Bot)
+	}
+	if !stored.CreatedAt.Equal(created) {
+		t.Errorf("created_at = %v, want %v", stored.CreatedAt, created)
+	}
+
+	// an unknown topic is 404, not a silent creation
+	request = httptest.NewRequest(http.MethodPut, "/topics/nowhere", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("status for an unknown topic = %d, want 404", recorder.Code)
+	}
+}

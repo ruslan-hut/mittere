@@ -81,11 +81,12 @@ func Create(logger *slog.Logger, handler Handler) http.HandlerFunc {
 func Update(logger *slog.Logger, handler Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := chi.URLParam(r, "code")
+		// decoded without Bind: a field the request leaves out must keep its
+		// stored value rather than be validated as an empty one
 		var topic entity.Topic
-		topic.Code = code
-		if err := render.Bind(r, &topic); err != nil {
+		if err := render.DecodeJSON(r.Body, &topic); err != nil {
 			render.Status(r, http.StatusBadRequest)
-			render.JSON(w, r, response.Error(err.Error()))
+			render.JSON(w, r, response.Error("Failed to decode request"))
 			return
 		}
 		topic.Code = code
