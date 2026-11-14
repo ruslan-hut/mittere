@@ -9,18 +9,48 @@ import (
 
 // --- topics ---
 
+// GetTopics returns every topic with the number of active channels subscribed
+// to it, so a topic that delivers nowhere is visible in the listing itself.
 func (c *Core) GetTopics() ([]entity.Topic, error) {
 	if c.repo == nil {
 		return nil, ErrNoRepository
 	}
-	return c.repo.GetTopics()
+	topics, err := c.repo.GetTopics()
+	if err != nil {
+		return nil, err
+	}
+	for i := range topics {
+		if err = c.countChannels(&topics[i]); err != nil {
+			return nil, err
+		}
+	}
+	return topics, nil
 }
 
 func (c *Core) GetTopic(code string) (*entity.Topic, error) {
 	if c.repo == nil {
 		return nil, ErrNoRepository
 	}
-	return c.repo.GetTopic(code)
+	topic, err := c.repo.GetTopic(code)
+	if err != nil || topic == nil {
+		return topic, err
+	}
+	if err = c.countChannels(topic); err != nil {
+		return nil, err
+	}
+	return topic, nil
+}
+
+// countChannels fills the topic's channel count from the same lookup the
+// dispatcher uses, so the number is what a message to that topic would reach:
+// channels that are disabled or stopped by their chat do not count.
+func (c *Core) countChannels(topic *entity.Topic) error {
+	channels, err := c.repo.GetChannelsByTopic(topic.Code)
+	if err != nil {
+		return fmt.Errorf("count channels of topic %s: %w", topic.Code, err)
+	}
+	topic.Channels = len(channels)
+	return nil
 }
 
 func (c *Core) CreateTopic(topic *entity.Topic) error {

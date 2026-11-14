@@ -24,6 +24,10 @@ type Topic struct {
 	Description string    `json:"description,omitempty" bson:"description"`
 	Bot         string    `json:"bot,omitempty" bson:"bot"`
 	CreatedAt   time.Time `json:"created_at,omitempty" bson:"created_at"`
+	// Channels counts the active channels subscribed to the topic. It is
+	// filled when the topic is read and never stored: a topic with no active
+	// channel has nowhere to deliver, and a sender gets 409 for it.
+	Channels int `json:"channels" bson:"-"`
 }
 
 func NewTopic(code, title string) Topic {
