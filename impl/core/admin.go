@@ -264,6 +264,9 @@ func (c *Core) UpdateSender(sender *entity.Sender) error {
 	if c.repo == nil {
 		return ErrNoRepository
 	}
+	if sender.Scope != "" && !entity.ValidScope(sender.Scope) {
+		return fmt.Errorf("%w: unknown scope %s", entity.ErrInvalid, sender.Scope)
+	}
 	stored, err := c.repo.GetSender(sender.Username)
 	if err != nil {
 		return err

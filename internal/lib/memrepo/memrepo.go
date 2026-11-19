@@ -377,6 +377,15 @@ func (r *Repo) FindEvents(filter entity.EventFilter) ([]entity.Event, error) {
 		if filter.Topic != "" && event.Topic != filter.Topic {
 			continue
 		}
+		if filter.Topic == "" && filter.Topics != nil && !contains(filter.Topics, event.Topic) {
+			continue
+		}
+		if filter.Triaged != nil && (event.Triage != nil) != *filter.Triaged {
+			continue
+		}
+		if filter.AfterID != "" && !after(event, filter.AfterTime, filter.AfterID) {
+			continue
+		}
 		if filter.Status != "" && event.Status != filter.Status {
 			continue
 		}
@@ -388,8 +397,96 @@ func (r *Repo) FindEvents(filter entity.EventFilter) ([]entity.Event, error) {
 		}
 		out = append(out, event)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	ascending := filter.Ascending || filter.AfterID != ""
+	sort.Slice(out, func(i, j int) bool {
+		if ascending {
+			return after(out[j], out[i].CreatedAt, out[i].EventID)
+		}
+		return after(out[i], out[j].CreatedAt, out[j].EventID)
+	})
+	// the same page size as the storage
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if int64(len(out)) > limit {
+		out = out[:limit]
+	}
 	return out, nil
+}
+
+// after reports whether an event comes after a position in the journal.
+func after(event entity.Event, at time.Time, id string) bool {
+	if event.CreatedAt.Equal(at) {
+		return event.EventID > id
+	}
+	return event.CreatedAt.After(at)
+}
+
+func contains(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Repo) SetEventTriage(eventID string, triage *entity.Triage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event, ok := r.Events[eventID]
+	if !ok {
+		return entity.ErrNotFound
+	}
+	if event.IsLeased(time.Now().UTC()) {
+		return entity.ErrInProgress
+	}
+	event.Triage = triage
+	r.Events[eventID] = event
+	return nil
+}
+
+func (r *Repo) SetEventRetraction(eventID string, retraction *entity.Retraction, deliveries []entity.Delivery) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event, ok := r.Events[eventID]
+	if !ok {
+		return entity.ErrNotFound
+	}
+	event.Retraction = retraction
+	event.Deliveries = append([]entity.Delivery(nil), deliveries...)
+	event.LeaseUntil = nil
+	r.Events[eventID] = event
+	return nil
+}
+
+func (r *Repo) LeaseEvent(eventID string, lease time.Duration) (*entity.Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event, ok := r.Events[eventID]
+	if !ok {
+		return nil, entity.ErrNotFound
+	}
+	now := time.Now().UTC()
+	if event.IsLeased(now) {
+		return nil, entity.ErrInProgress
+	}
+	until := now.Add(lease)
+	event.LeaseUntil = &until
+	r.Events[eventID] = event
+	event.Deliveries = append([]entity.Delivery(nil), event.Deliveries...)
+	return &event, nil
+}
+
+func (r *Repo) ReleaseEvent(eventID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if event, ok := r.Events[eventID]; ok {
+		event.LeaseUntil = nil
+		r.Events[eventID] = event
+	}
+	return nil
 }
 
 func (r *Repo) CreateLinkCode(code *entity.LinkCode) error {

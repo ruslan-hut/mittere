@@ -12,4 +12,9 @@ var (
 	// ErrInProgress means the same message is being delivered right now by
 	// another call with the same dedup key.
 	ErrInProgress = errors.New("delivery of this message is already running")
+	// ErrForbidden means the sender has no right to the topic it asked for.
+	ErrForbidden = errors.New("topic not allowed for this sender")
+	// ErrInvalid means the request itself is wrong: an unknown value or a
+	// missing field the operation cannot do without.
+	ErrInvalid = errors.New("invalid request")
 )

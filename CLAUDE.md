@@ -103,7 +103,8 @@ journal records them.
 ### HTTP API
 
 Full description in `docs/api.md`. Sending needs a `send` token, everything else
-an `admin` token; `GET /health` needs none.
+an `admin` token; `GET /health` needs none. An `agent` token reaches only
+`/events` and only the topics in its `allowed_topics` (empty means none).
 
 | Method | Path | Scope |
 |---|---|---|
@@ -111,7 +112,9 @@ an `admin` token; `GET /health` needs none.
 | POST | /tg/msg, GET /tg/test | send (legacy) |
 | GET/POST | /topics, /senders | admin |
 | GET/PUT/DELETE | /topics/{code}, /senders/{username} | admin |
-| GET | /channels, /events, /events/{id} | admin |
+| GET | /channels | admin |
+| GET | /events, /events/{id} | admin, agent |
+| POST | /events/{id}/triage, /events/{id}/retract | admin, agent |
 | POST | /channels/link | admin |
 | GET/PUT/DELETE | /channels/{id} | admin |
 | GET | /health | none (admin sees more) |

@@ -15,7 +15,7 @@ var (
 	ErrNoRepository = errors.New("repository not initialized")
 	ErrNoTransport  = errors.New("message service not initialized")
 	ErrUnknownTopic = errors.New("unknown topic")
-	ErrForbidden    = errors.New("topic not allowed for this sender")
+	ErrForbidden    = entity.ErrForbidden
 	ErrNotFound     = entity.ErrNotFound
 	ErrConflict     = entity.ErrConflict
 	ErrInProgress   = entity.ErrInProgress
@@ -60,6 +60,18 @@ type Repository interface {
 	GetEvent(eventID string) (*entity.Event, error)
 	GetEventByDedupKey(key string) (*entity.Event, error)
 	FindEvents(filter entity.EventFilter) ([]entity.Event, error)
+	// SetEventTriage writes the verdict on an event, replacing an earlier one,
+	// or returns entity.ErrInProgress while the event is being delivered.
+	SetEventTriage(eventID string, triage *entity.Triage) error
+	// LeaseEvent takes an event for work the way a delivery does, so neither a
+	// delivery nor another call writes over it meanwhile; entity.ErrInProgress
+	// while someone else holds it.
+	LeaseEvent(eventID string, lease time.Duration) (*entity.Event, error)
+	// SetEventRetraction writes the retraction and the deliveries it changed
+	// and releases the lease.
+	SetEventRetraction(eventID string, retraction *entity.Retraction, deliveries []entity.Delivery) error
+	// ReleaseEvent drops the lease without changing anything else.
+	ReleaseEvent(eventID string) error
 
 	CreateLinkCode(code *entity.LinkCode) error
 	GetLinkCode(code string) (*entity.LinkCode, error)
@@ -72,6 +84,8 @@ type Repository interface {
 type Transport interface {
 	Format(msg *entity.Message) string
 	Send(ctx context.Context, chatID int64, threadID int, text string) (messageID int, attempts int, err error)
+	// Delete removes a message the transport sent earlier.
+	Delete(ctx context.Context, chatID int64, messageID int) error
 	BotName() string
 	Alive() bool
 }

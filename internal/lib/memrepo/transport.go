@@ -14,18 +14,26 @@ type Sent struct {
 	Text     string
 }
 
+// Deleted is one message the transport was asked to delete.
+type Deleted struct {
+	ChatID    int64
+	MessageID int
+}
+
 // Transport is a message transport that records what it was asked to send and
-// fails for the chats listed in FailFor.
+// to delete, and fails for the chats listed in FailFor and DeleteFailFor.
 type Transport struct {
-	mu       sync.Mutex
-	Messages []Sent
-	FailFor  map[int64]error
-	Attempts int // attempts reported per call, 1 when zero
-	Down     bool
+	mu            sync.Mutex
+	Messages      []Sent
+	Deletions     []Deleted
+	FailFor       map[int64]error
+	DeleteFailFor map[int64]error
+	Attempts      int // attempts reported per call, 1 when zero
+	Down          bool
 }
 
 func NewTransport() *Transport {
-	return &Transport{FailFor: make(map[int64]error)}
+	return &Transport{FailFor: make(map[int64]error), DeleteFailFor: make(map[int64]error)}
 }
 
 func (t *Transport) Format(msg *entity.Message) string {
@@ -44,6 +52,23 @@ func (t *Transport) Send(_ context.Context, chatID int64, threadID int, text str
 	}
 	t.Messages = append(t.Messages, Sent{ChatID: chatID, ThreadID: threadID, Text: text})
 	return len(t.Messages), attempts, nil
+}
+
+func (t *Transport) Delete(_ context.Context, chatID int64, messageID int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err, ok := t.DeleteFailFor[chatID]; ok {
+		return err
+	}
+	t.Deletions = append(t.Deletions, Deleted{ChatID: chatID, MessageID: messageID})
+	return nil
+}
+
+// DeletedCount returns how many messages the transport deleted.
+func (t *Transport) DeletedCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.Deletions)
 }
 
 func (t *Transport) BotName() string { return "test_bot" }

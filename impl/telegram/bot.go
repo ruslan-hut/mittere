@@ -209,6 +209,20 @@ func (b *TgBot) send(ctx context.Context, chatID int64, threadID int, text strin
 	return message.ID, nil
 }
 
+// Delete removes a message the bot sent. A message that is already gone counts
+// as deleted. Telegram refuses messages older than 48 hours and chats where the
+// bot has no right to delete messages; that refusal is returned as the error.
+func (b *TgBot) Delete(ctx context.Context, chatID int64, messageID int) error {
+	if err := b.limit.wait(ctx, chatID); err != nil {
+		return err
+	}
+	_, err := b.bot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: messageID})
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "message to delete not found") {
+		return nil
+	}
+	return err
+}
+
 // handleUpdate serves the chat commands. In a group the bot sees only the
 // commands addressed to it, which is why a chat is linked by a code sent in the
 // chat rather than by typing its identifier somewhere else.

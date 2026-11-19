@@ -16,6 +16,10 @@ func Status(err error, fallback int) int {
 		return http.StatusNotFound
 	case errors.Is(err, entity.ErrConflict), errors.Is(err, entity.ErrInProgress):
 		return http.StatusConflict
+	case errors.Is(err, entity.ErrForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, entity.ErrInvalid):
+		return http.StatusBadRequest
 	default:
 		return fallback
 	}

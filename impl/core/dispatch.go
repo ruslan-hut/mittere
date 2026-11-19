@@ -134,8 +134,9 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 		if err != nil {
 			return nil, false, fmt.Errorf("read event by dedup key: %w", err)
 		}
-		// what is already delivered is never sent again
-		if found != nil && found.Status == entity.EventDelivered {
+		// what is already delivered is never sent again, and neither is what
+		// was retracted from the chats
+		if found != nil && (found.Status == entity.EventDelivered || found.Retraction != nil) {
 			return found, true, nil
 		}
 	}
@@ -162,10 +163,21 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 	if err != nil {
 		return nil, false, err
 	}
+	if previous != nil && previous.Retraction != nil {
+		// retracted between the lookup above and the claim: nothing goes out
+		// again, and the record is put back as it was, without the claim
+		previous.LeaseUntil = nil
+		if err = c.repo.SaveEvent(previous); err != nil {
+			return nil, false, fmt.Errorf("save event: %w", err)
+		}
+		return previous, true, nil
+	}
 	if previous != nil {
 		// keep the identifier, so a repeated call from 1C stays one event
 		event.EventID = previous.EventID
 		event.CreatedAt = previous.CreatedAt
+		event.Triage = previous.Triage
+		event.Retraction = previous.Retraction
 	}
 
 	event.Deliveries = make([]entity.Delivery, 0, len(recipients))
@@ -220,22 +232,6 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 		return nil, false, fmt.Errorf("save event: %w", err)
 	}
 	return event, false, nil
-}
-
-// GetEvent returns one journal record.
-func (c *Core) GetEvent(eventID string) (*entity.Event, error) {
-	if c.repo == nil {
-		return nil, ErrNoRepository
-	}
-	return c.repo.GetEvent(eventID)
-}
-
-// FindEvents returns journal records matching a filter.
-func (c *Core) FindEvents(filter entity.EventFilter) ([]entity.Event, error) {
-	if c.repo == nil {
-		return nil, ErrNoRepository
-	}
-	return c.repo.FindEvents(filter)
 }
 
 func newID() string {

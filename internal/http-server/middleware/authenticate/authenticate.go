@@ -109,6 +109,20 @@ func AdminOnly(next http.Handler) http.Handler {
 	})
 }
 
+// AdminOrAgent lets through an administrator and an agent, which reads and
+// works the journal of its own topics only.
+func AdminOrAgent(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sender := cont.GetSender(r.Context())
+		if !sender.IsAdmin() && !sender.IsAgent() {
+			render.Status(r, http.StatusForbidden)
+			render.JSON(w, r, response.Error("Admin or agent token required"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func authFailed(w http.ResponseWriter, r *http.Request, message string) {
 	render.Status(r, http.StatusUnauthorized)
 	render.JSON(w, r, response.Error(message))

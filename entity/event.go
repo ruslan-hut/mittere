@@ -11,6 +11,15 @@ const (
 	DeliveryPending = "pending"
 	DeliverySent    = "sent"
 	DeliveryFailed  = "failed"
+	// DeliveryRetracted is a sent message deleted from the chat afterwards.
+	DeliveryRetracted = "retracted"
+)
+
+// Triage verdicts an agent gives an event.
+const (
+	VerdictTask      = "task"
+	VerdictDuplicate = "duplicate"
+	VerdictNoise     = "noise"
 )
 
 // Event statuses, over all recipients of one message.
@@ -70,9 +79,41 @@ type Event struct {
 	CreatedAt time.Time   `json:"created_at" bson:"created_at"`
 	// LeaseUntil holds the claim of the call that is delivering this event;
 	// while it is in the future no other call may send the same dedup key.
-	LeaseUntil *time.Time `json:"-" bson:"lease_until,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
-	Deliveries []Delivery `json:"deliveries" bson:"deliveries"`
+	LeaseUntil *time.Time  `json:"-" bson:"lease_until,omitempty"`
+	FinishedAt *time.Time  `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
+	Deliveries []Delivery  `json:"deliveries" bson:"deliveries"`
+	Triage     *Triage     `json:"triage,omitempty" bson:"triage,omitempty"`
+	Retraction *Retraction `json:"retraction,omitempty" bson:"retraction,omitempty"`
+}
+
+// Triage is the verdict an agent gave an event.
+type Triage struct {
+	Verdict string    `json:"verdict" bson:"verdict"`
+	TaskKey string    `json:"task_key,omitempty" bson:"task_key,omitempty"`
+	Note    string    `json:"note,omitempty" bson:"note,omitempty"`
+	By      string    `json:"by" bson:"by"`
+	At      time.Time `json:"at" bson:"at"`
+}
+
+// ValidVerdict reports whether a triage verdict is one the service knows.
+func ValidVerdict(verdict string) bool {
+	switch verdict {
+	case VerdictTask, VerdictDuplicate, VerdictNoise:
+		return true
+	}
+	return false
+}
+
+// Retraction records that the messages of an event were deleted from the chats.
+type Retraction struct {
+	Reason string    `json:"reason" bson:"reason"`
+	By     string    `json:"by" bson:"by"`
+	At     time.Time `json:"at" bson:"at"`
+}
+
+// IsLeased reports whether a call is delivering the event right now.
+func (e *Event) IsLeased(now time.Time) bool {
+	return e.LeaseUntil != nil && e.LeaseUntil.After(now)
 }
 
 // Recalculate sets the event status from the state of its deliveries.
@@ -105,8 +146,19 @@ func (e *Event) Recalculate() {
 // EventFilter selects events for GET /events.
 type EventFilter struct {
 	Topic  string
+	Topics []string // the topics to read when Topic is empty
 	Status string
 	From   time.Time
 	To     time.Time
 	Limit  int64
+	// Triaged, when set, keeps only the events with or without a verdict.
+	Triaged *bool
+	// After is the event_id of the cursor: only the events created after it,
+	// oldest first.
+	After string
+	// AfterTime and AfterID are the position of the cursor, resolved from After.
+	AfterTime time.Time
+	AfterID   string
+	// Ascending returns the oldest first, as a feed is read.
+	Ascending bool
 }

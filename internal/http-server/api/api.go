@@ -94,10 +94,18 @@ func Router(log *slog.Logger, handler Handler) http.Handler {
 				r.Put("/{username}", senders.Update(log, handler))
 				r.Delete("/{username}", senders.Delete(log, handler))
 			})
+		})
+
+		// the journal: an admin sees all of it, an agent the events of its
+		// topics, which the business layer enforces per event
+		r.Group(func(r chi.Router) {
+			r.Use(authenticate.AdminOrAgent)
 
 			r.Route("/events", func(r chi.Router) {
 				r.Get("/", events.List(log, handler))
 				r.Get("/{id}", events.Get(log, handler))
+				r.Post("/{id}/triage", events.Triage(log, handler))
+				r.Post("/{id}/retract", events.Retract(log, handler))
 			})
 		})
 	})
