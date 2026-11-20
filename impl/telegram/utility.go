@@ -3,6 +3,7 @@ package telegram
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var codePattern = regexp.MustCompile(`^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
@@ -68,4 +69,13 @@ func extractCommand(text string) (string, string) {
 // looksLikeCode reports whether a plain message is a linking code.
 func looksLikeCode(text string) bool {
 	return codePattern.MatchString(strings.ToUpper(strings.TrimSpace(text)))
+}
+
+// hashtag keeps only letters and digits of a subject, joining the words with
+// underscores, so Telegram treats the whole subject as one tag.
+func hashtag(subject string) string {
+	words := strings.FieldsFunc(subject, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	return strings.Join(words, "_")
 }

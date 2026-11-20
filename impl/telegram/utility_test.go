@@ -64,12 +64,22 @@ func TestFormat(t *testing.T) {
 		{
 			name: "ordinary message keeps type and tag",
 			msg:  entity.Message{Topic: "rior.eventlog", Type: "error", Subject: "Ошибка проведения", Text: "Док. 12."},
-			want: "*error*: `#Ошибка проведения`\nДок\\. 12\\.\n",
+			want: "*error*: `#Ошибка_проведения`\nДок\\. 12\\.\n",
+		},
+		{
+			name: "tag keeps letters and digits joined by underscores",
+			msg:  entity.Message{Topic: "rior.eventlog", Type: "Журнал подій", Subject: "Обмен с сайтом: B2B Україна (v2.1)"},
+			want: "*Журнал подій*: `#Обмен_с_сайтом_B2B_Україна_v2_1`\n",
+		},
+		{
+			name: "spaces in the tag become underscores",
+			msg:  entity.Message{Topic: "marketing.shipments", Type: "Маркетингові відправки", Subject: "Маркетингові відправки"},
+			want: "*Маркетингові відправки*: `#Маркетингові_відправки`\n",
 		},
 		{
 			name: "subject falls back to topic",
 			msg:  entity.Message{Topic: "rior.eventlog", Type: "info"},
-			want: "*info*: `#rior.eventlog`\n",
+			want: "*info*: `#rior_eventlog`\n",
 		},
 		{
 			name: "ordinary resolved type is not an outcome",

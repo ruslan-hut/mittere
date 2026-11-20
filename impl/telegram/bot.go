@@ -120,7 +120,7 @@ func (b *TgBot) Format(msg *entity.Message) string {
 		// a task outcome is read by people: the subject alone, as a bold title
 		text = fmt.Sprintf("*%v*\n", strings.ReplaceAll(escapeText(subject), "*", `\*`))
 	} else {
-		text = fmt.Sprintf("*%v*: `#%v`\n", msg.Type, subject)
+		text = fmt.Sprintf("*%v*: `#%v`\n", msg.Type, hashtag(subject))
 	}
 	if msg.Text != "" {
 		text += fmt.Sprintf("%v\n", escapeText(msg.Text))
