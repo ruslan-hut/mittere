@@ -1,6 +1,10 @@
 package telegram
 
-import "testing"
+import (
+	"testing"
+
+	"mittere/entity"
+)
 
 func TestExtractCommand(t *testing.T) {
 	tests := []struct {
@@ -46,6 +50,43 @@ func TestLooksLikeCode(t *testing.T) {
 		t.Run(tt.text, func(t *testing.T) {
 			if got := looksLikeCode(tt.text); got != tt.want {
 				t.Errorf("looksLikeCode(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  entity.Message
+		want string
+	}{
+		{
+			name: "ordinary message keeps type and tag",
+			msg:  entity.Message{Topic: "rior.eventlog", Type: "error", Subject: "Ошибка проведения", Text: "Док. 12."},
+			want: "*error*: `#Ошибка проведения`\nДок\\. 12\\.\n",
+		},
+		{
+			name: "subject falls back to topic",
+			msg:  entity.Message{Topic: "rior.eventlog", Type: "info"},
+			want: "*info*: `#rior.eventlog`\n",
+		},
+		{
+			name: "ordinary resolved type is not an outcome",
+			msg:  entity.Message{Topic: "t", Type: "resolved", Subject: "s"},
+			want: "*resolved*: `#s`\n",
+		},
+		{
+			name: "outcome shows the bold escaped subject only",
+			msg:  entity.Message{Topic: "rior.eventlog", Type: "resolved", Subject: "✅ Решено · Ошибка в *РН-12* (v2.1)", Text: "Исправлено.", Resolves: "Tb34dc0d1"},
+			want: "*✅ Решено · Ошибка в \\*РН\\-12\\* \\(v2\\.1\\)*\nИсправлено\\.\n",
+		},
+	}
+	b := &TgBot{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := b.Format(&tt.msg); got != tt.want {
+				t.Errorf("Format() = %q, want %q", got, tt.want)
 			}
 		})
 	}
