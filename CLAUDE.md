@@ -20,11 +20,17 @@ go test -short ./...
 
 The binary entry point is `cmd/mittere/main.go`. There is no Makefile or Dockerfile.
 
-**Deployment**: `.github/workflows/deploy.yml` deploys on every push to `master`
-— it builds the binary, copies it and the rendered `mittere-config.yml` to the
-server behind `secrets.SERVER_IP` and restarts `mittere.service`. That server is
-the live Wattbrews instance (notify.wattbrews.me). Do not push to `master`
-without saying what will be deployed.
+**Deployment**: every workflow builds the binary, copies it and the rendered
+`mittere-config.yml` to its server and restarts `mittere.service`. A push
+deploys, so do not push to `master` or `v2` without saying what will be
+deployed and getting a yes.
+
+| Branch / trigger | Workflow | Instance |
+|---|---|---|
+| push to `master` | `deploy.yml` | live Wattbrews (notify.wattbrews.me), `secrets.SERVER_IP` |
+| push to `v2` | `deploy-azno.yml` | live Dark on azno (notify.nomadus.net), `secrets.AZNO_SERVER_HOST`; changes only to docs / `*.md` don't deploy |
+| push to `develop` | `deploy-dev.yml` | dev server, `secrets.DEV_SERVER_IP` |
+| manual, with a tag | `deploy-prod-tag.yml` | Wattbrews |
 
 ## Tests
 
