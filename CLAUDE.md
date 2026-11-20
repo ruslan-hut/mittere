@@ -114,7 +114,7 @@ an `admin` token; `GET /health` needs none. An `agent` token reaches only
 | GET/PUT/DELETE | /topics/{code}, /senders/{username} | admin |
 | GET | /channels | admin |
 | GET | /events, /events/{id} | admin, agent |
-| POST | /events/{id}/triage, /events/{id}/retract | admin, agent |
+| POST | /events/{id}/triage, /events/{id}/retract, /events/resolve | admin, agent |
 | POST | /channels/link | admin |
 | GET/PUT/DELETE | /channels/{id} | admin |
 | GET | /health | none (admin sees more) |

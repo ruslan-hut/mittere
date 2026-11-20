@@ -24,6 +24,7 @@ type Handler interface {
 	FindEvents(sender *entity.Sender, filter entity.EventFilter) ([]entity.Event, error)
 	TriageEvent(sender *entity.Sender, eventID string, triage *entity.Triage) (*entity.Event, error)
 	RetractEvent(ctx context.Context, sender *entity.Sender, eventID, reason string) (*entity.Event, error)
+	ResolveTask(ctx context.Context, sender *entity.Sender, taskKey, subject, text string) (*entity.TaskOutcome, error)
 }
 
 func log(logger *slog.Logger, r *http.Request) *slog.Logger {
@@ -34,7 +35,7 @@ func log(logger *slog.Logger, r *http.Request) *slog.Logger {
 }
 
 // List serves GET /events with the filters topic, status, from, to, limit,
-// triaged and the cursor after.
+// triaged, task_key and the cursor after.
 func List(logger *slog.Logger, handler Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		filter, err := parseFilter(r)
@@ -130,6 +131,43 @@ func Retract(logger *slog.Logger, handler Handler) http.HandlerFunc {
 	}
 }
 
+type resolveRequest struct {
+	TaskKey string `json:"task_key"`
+	Subject string `json:"subject"`
+	Text    string `json:"text"`
+}
+
+// Resolve serves POST /events/resolve: the outcome of a task goes out as a new
+// message to every chat its events reached, then those events are retracted.
+// 200 means the outcome is everywhere and nothing of the events is left, 207
+// that something is not done yet and a repeat will finish it, 404 that no
+// event is triaged to the task, 409 that one of them is busy right now.
+func Resolve(logger *slog.Logger, handler Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request resolveRequest
+		if err := render.DecodeJSON(r.Body, &request); err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, response.Error("Failed to decode request"))
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Minute)
+		defer cancel()
+		outcome, err := handler.ResolveTask(ctx, cont.GetSender(r.Context()), request.TaskKey, request.Subject, request.Text)
+		if err != nil {
+			fail(w, r, logger, "resolve task", err)
+			return
+		}
+		if !outcome.IsComplete() {
+			render.Status(r, http.StatusMultiStatus)
+			res := response.Error("Task is not fully resolved yet")
+			res.Data = outcome
+			render.JSON(w, r, res)
+			return
+		}
+		render.JSON(w, r, response.Ok(outcome))
+	}
+}
+
 // fail answers an error of the business layer: a refused topic, a bad request
 // or a missing event keep their meaning, anything else is a server error.
 func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
@@ -149,9 +187,10 @@ func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action st
 func parseFilter(r *http.Request) (entity.EventFilter, error) {
 	query := r.URL.Query()
 	filter := entity.EventFilter{
-		Topic:  query.Get("topic"),
-		Status: query.Get("status"),
-		After:  query.Get("after"),
+		Topic:   query.Get("topic"),
+		Status:  query.Get("status"),
+		After:   query.Get("after"),
+		TaskKey: query.Get("task_key"),
 	}
 	if raw := query.Get("triaged"); raw != "" {
 		triaged, err := strconv.ParseBool(raw)

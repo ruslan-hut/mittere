@@ -103,6 +103,7 @@ func Router(log *slog.Logger, handler Handler) http.Handler {
 
 			r.Route("/events", func(r chi.Router) {
 				r.Get("/", events.List(log, handler))
+				r.Post("/resolve", events.Resolve(log, handler))
 				r.Get("/{id}", events.Get(log, handler))
 				r.Post("/{id}/triage", events.Triage(log, handler))
 				r.Post("/{id}/retract", events.Retract(log, handler))

@@ -70,6 +70,9 @@ type Repository interface {
 	// SetEventRetraction writes the retraction and the deliveries it changed
 	// and releases the lease.
 	SetEventRetraction(eventID string, retraction *entity.Retraction, deliveries []entity.Delivery) error
+	// SetEventResolution writes the resolution on an event, or returns
+	// entity.ErrInProgress while the event is leased.
+	SetEventResolution(eventID string, resolution *entity.Resolution) error
 	// ReleaseEvent drops the lease without changing anything else.
 	ReleaseEvent(eventID string) error
 

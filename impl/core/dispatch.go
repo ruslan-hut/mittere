@@ -50,7 +50,13 @@ func (c *Core) Publish(ctx context.Context, msg *entity.Message, sender *entity.
 	if done {
 		return event, nil
 	}
+	c.deliver(ctx, event, msg, topic)
+	return event, nil
+}
 
+// deliver sends a prepared event to every recipient it has not reached yet and
+// records the outcome.
+func (c *Core) deliver(ctx context.Context, event *entity.Event, msg *entity.Message, topic string) {
 	// the text is rendered from the message as it will be journalled, with the
 	// topic already resolved
 	rendered := *msg
@@ -79,7 +85,7 @@ func (c *Core) Publish(ctx context.Context, msg *entity.Message, sender *entity.
 		// the journal is written after every recipient: if the service dies
 		// mid fan out, a retry picks up where it stopped instead of sending
 		// everything again
-		if err = c.repo.SaveEvent(event); err != nil {
+		if err := c.repo.SaveEvent(event); err != nil {
 			log.Error("save event", sl.Err(err))
 		}
 	}
@@ -88,11 +94,10 @@ func (c *Core) Publish(ctx context.Context, msg *entity.Message, sender *entity.
 	finishedAt := time.Now().UTC()
 	event.FinishedAt = &finishedAt
 	event.LeaseUntil = nil
-	if err = c.repo.SaveEvent(event); err != nil {
+	if err := c.repo.SaveEvent(event); err != nil {
 		log.Error("save event", sl.Err(err))
 	}
 	log.With(slog.String("status", event.Status), slog.Int("recipients", len(event.Deliveries))).Info("message published")
-	return event, nil
 }
 
 // ResolveTopic picks the topic of a message. Messages without a topic come from
@@ -149,11 +154,17 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 		Text:      msg.Text,
 		Payload:   msg.Payload,
 		DedupKey:  msg.DedupKey,
+		Resolves:  msg.Resolves,
 		CreatedAt: time.Now().UTC(),
 		Status:    entity.EventPending,
 	}
 	if sender != nil {
 		event.Sender = sender.Username
+	}
+	if msg.Resolves != "" {
+		// the outcome is already worked: it belongs to the task and stays out
+		// of the feed of what is left to triage
+		event.Triage = &entity.Triage{Verdict: entity.VerdictTask, TaskKey: msg.Resolves, By: event.Sender, At: event.CreatedAt}
 	}
 
 	// claiming comes before any sending: a second call with the same dedup key,
@@ -178,6 +189,7 @@ func (c *Core) prepareEvent(msg *entity.Message, topic string, sender *entity.Se
 		event.CreatedAt = previous.CreatedAt
 		event.Triage = previous.Triage
 		event.Retraction = previous.Retraction
+		event.Resolution = previous.Resolution
 	}
 
 	event.Deliveries = make([]entity.Delivery, 0, len(recipients))

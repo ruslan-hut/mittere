@@ -145,6 +145,11 @@ func (m *MongoDB) Prepare(ctx context.Context) error {
 				SetPartialFilterExpression(bson.M{"dedup_key": bson.M{"$exists": true}}),
 		}},
 		{eventsCollection, mongo.IndexModel{
+			Keys: bson.D{{Key: "triage.task_key", Value: 1}},
+			Options: options.Index().SetName("triage_task_key").
+				SetPartialFilterExpression(bson.M{"triage.task_key": bson.M{"$exists": true}}),
+		}},
+		{eventsCollection, mongo.IndexModel{
 			Keys:    bson.D{{Key: "created_at", Value: 1}},
 			Options: options.Index().SetName("events_ttl").SetExpireAfterSeconds(int32(m.eventsTTL.Seconds())),
 		}},

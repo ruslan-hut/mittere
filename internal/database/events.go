@@ -137,6 +137,9 @@ func (m *MongoDB) FindEvents(f entity.EventFilter) ([]entity.Event, error) {
 	} else if f.Topics != nil {
 		filter["topic"] = bson.M{"$in": f.Topics}
 	}
+	if f.TaskKey != "" {
+		filter["triage.task_key"] = f.TaskKey
+	}
 	if f.Triaged != nil {
 		filter["triage"] = bson.M{"$exists": *f.Triaged}
 	}
@@ -238,6 +241,21 @@ func (m *MongoDB) SetEventRetraction(eventID string, retraction *entity.Retracti
 	}
 	if result.MatchedCount == 0 {
 		return fmt.Errorf("event %s: %w", eventID, entity.ErrNotFound)
+	}
+	return nil
+}
+
+// SetEventResolution writes the resolution on an event nobody holds a lease on.
+func (m *MongoDB) SetEventResolution(eventID string, resolution *entity.Resolution) error {
+	ctx, cancel := timeoutCtx()
+	defer cancel()
+
+	result, err := m.collection(eventsCollection).UpdateOne(ctx, unleased(eventID), bson.M{"$set": bson.M{"resolution": resolution}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return m.whyUnmatched(ctx, eventID)
 	}
 	return nil
 }

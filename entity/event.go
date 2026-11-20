@@ -40,6 +40,10 @@ type Message struct {
 	Payload  interface{} `json:"payload,omitempty" bson:"payload"`
 	DedupKey string      `json:"dedup_key,omitempty" bson:"dedup_key"`
 
+	// Resolves is the task key whose outcome this message reports, set by
+	// POST /events/resolve only.
+	Resolves string `json:"-" bson:"-"`
+
 	// Legacy targeting, filled by the POST /tg/msg handler only.
 	Role     string `json:"-" bson:"-"`
 	Username string `json:"-" bson:"-"`
@@ -84,6 +88,47 @@ type Event struct {
 	Deliveries []Delivery  `json:"deliveries" bson:"deliveries"`
 	Triage     *Triage     `json:"triage,omitempty" bson:"triage,omitempty"`
 	Retraction *Retraction `json:"retraction,omitempty" bson:"retraction,omitempty"`
+	// Resolution is set on the events a task outcome closed.
+	Resolution *Resolution `json:"resolution,omitempty" bson:"resolution,omitempty"`
+	// Resolves is set on the outcome message itself: the task key it reports.
+	Resolves string `json:"resolves,omitempty" bson:"resolves,omitempty"`
+}
+
+// Resolution records that the task an event was triaged to is done: the
+// outcome went out as the event ResultID and the event was retracted.
+type Resolution struct {
+	TaskKey  string    `json:"task_key" bson:"task_key"`
+	ResultID string    `json:"result_id" bson:"result_id"`
+	By       string    `json:"by" bson:"by"`
+	At       time.Time `json:"at" bson:"at"`
+}
+
+// TaskOutcome is what POST /events/resolve did: the outcome message and the
+// events of the task it closed.
+type TaskOutcome struct {
+	TaskKey string  `json:"task_key"`
+	Result  *Event  `json:"result"`
+	Events  []Event `json:"events"`
+}
+
+// IsComplete reports whether the outcome reached every chat and every event of
+// the task is resolved with nothing of it left in the chats.
+func (o *TaskOutcome) IsComplete() bool {
+	if o.Result == nil || (o.Result.Status != EventDelivered && o.Result.Status != EventNoRecipients) {
+		return false
+	}
+	for i := range o.Events {
+		if o.Events[i].Resolution == nil {
+			return false
+		}
+		for j := range o.Events[i].Deliveries {
+			delivery := &o.Events[i].Deliveries[j]
+			if delivery.IsSent() && delivery.MessageID != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Triage is the verdict an agent gave an event.
@@ -151,6 +196,8 @@ type EventFilter struct {
 	From   time.Time
 	To     time.Time
 	Limit  int64
+	// TaskKey keeps only the events triaged to this task.
+	TaskKey string
 	// Triaged, when set, keeps only the events with or without a verdict.
 	Triaged *bool
 	// After is the event_id of the cursor: only the events created after it,

@@ -380,6 +380,9 @@ func (r *Repo) FindEvents(filter entity.EventFilter) ([]entity.Event, error) {
 		if filter.Topic == "" && filter.Topics != nil && !contains(filter.Topics, event.Topic) {
 			continue
 		}
+		if filter.TaskKey != "" && (event.Triage == nil || event.Triage.TaskKey != filter.TaskKey) {
+			continue
+		}
 		if filter.Triaged != nil && (event.Triage != nil) != *filter.Triaged {
 			continue
 		}
@@ -477,6 +480,21 @@ func (r *Repo) LeaseEvent(eventID string, lease time.Duration) (*entity.Event, e
 	r.Events[eventID] = event
 	event.Deliveries = append([]entity.Delivery(nil), event.Deliveries...)
 	return &event, nil
+}
+
+func (r *Repo) SetEventResolution(eventID string, resolution *entity.Resolution) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event, ok := r.Events[eventID]
+	if !ok {
+		return entity.ErrNotFound
+	}
+	if event.IsLeased(time.Now().UTC()) {
+		return entity.ErrInProgress
+	}
+	event.Resolution = resolution
+	r.Events[eventID] = event
+	return nil
 }
 
 func (r *Repo) ReleaseEvent(eventID string) error {

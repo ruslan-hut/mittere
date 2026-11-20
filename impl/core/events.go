@@ -144,6 +144,135 @@ func (c *Core) RetractEvent(ctx context.Context, sender *entity.Sender, eventID,
 	return event, nil
 }
 
+// OutcomeType is the message type of a task outcome.
+const OutcomeType = "resolved"
+
+// ResolveTask reports the outcome of a task: one new message in every chat the
+// events triaged to it reached, then those events are retracted and marked
+// resolved. The outcome is journalled as an event of its own under the dedup
+// key resolve:<task key>, so a repeated call sends it only where it did not
+// arrive and finishes the retractions Telegram refused before. The events are
+// retracted only once the outcome has reached every chat: a chat is never left
+// with neither the alert nor its outcome.
+func (c *Core) ResolveTask(ctx context.Context, sender *entity.Sender, taskKey, subject, text string) (*entity.TaskOutcome, error) {
+	if c.repo == nil {
+		return nil, ErrNoRepository
+	}
+	if c.transport == nil {
+		return nil, ErrNoTransport
+	}
+	taskKey = strings.TrimSpace(taskKey)
+	text = strings.TrimSpace(text)
+	if taskKey == "" {
+		return nil, fmt.Errorf("%w: task_key is required", entity.ErrInvalid)
+	}
+	if text == "" {
+		return nil, fmt.Errorf("%w: text is required", entity.ErrInvalid)
+	}
+	found, err := c.FindEvents(sender, entity.EventFilter{TaskKey: taskKey, Limit: 500, Ascending: true})
+	if err != nil {
+		return nil, err
+	}
+	events := make([]entity.Event, 0, len(found))
+	now := time.Now().UTC()
+	for i := range found {
+		if found[i].Resolves != "" {
+			continue
+		}
+		if found[i].IsLeased(now) {
+			return nil, ErrInProgress
+		}
+		events = append(events, found[i])
+	}
+	if len(events) == 0 {
+		return nil, fmt.Errorf("events of task %s: %w", taskKey, ErrNotFound)
+	}
+
+	// the outcome goes where the events went, once per channel, whatever
+	// topic each of them came from
+	recipients := make([]entity.Channel, 0)
+	seen := make(map[string]bool)
+	for i := range events {
+		for _, delivery := range events[i].Deliveries {
+			if delivery.Status != entity.DeliverySent && delivery.Status != entity.DeliveryRetracted {
+				continue
+			}
+			if seen[delivery.ChannelID] {
+				continue
+			}
+			seen[delivery.ChannelID] = true
+			recipients = append(recipients, entity.Channel{
+				ChannelID: delivery.ChannelID,
+				ChatID:    delivery.ChatID,
+				ThreadID:  delivery.ThreadID,
+			})
+		}
+	}
+
+	if strings.TrimSpace(subject) == "" {
+		subject = taskKey
+	}
+	topic := events[len(events)-1].Topic
+	msg := &entity.Message{
+		Topic:    topic,
+		Type:     OutcomeType,
+		Subject:  subject,
+		Text:     text,
+		DedupKey: "resolve:" + taskKey,
+		Resolves: taskKey,
+	}
+	result, done, err := c.prepareEvent(msg, topic, sender, recipients)
+	if err != nil {
+		return nil, err
+	}
+	if !done {
+		c.deliver(ctx, result, msg, topic)
+	}
+	outcome := &entity.TaskOutcome{TaskKey: taskKey, Result: result, Events: events}
+	if result.Status != entity.EventDelivered && result.Status != entity.EventNoRecipients {
+		return outcome, nil
+	}
+
+	log := c.log.With(slog.String("task_key", taskKey), slog.String("result_id", result.EventID))
+	for i := range outcome.Events {
+		event := &outcome.Events[i]
+		if event.Retraction == nil || leftInChats(event) {
+			retracted, retractErr := c.RetractEvent(ctx, sender, event.EventID, "resolved "+taskKey)
+			if retractErr != nil {
+				log.With(slog.String("event_id", event.EventID)).Error("retract", sl.Err(retractErr))
+				continue
+			}
+			*event = *retracted
+		}
+		if event.Resolution != nil {
+			continue
+		}
+		resolution := &entity.Resolution{
+			TaskKey:  taskKey,
+			ResultID: result.EventID,
+			By:       sender.Username,
+			At:       time.Now().UTC(),
+		}
+		if err = c.repo.SetEventResolution(event.EventID, resolution); err != nil {
+			log.With(slog.String("event_id", event.EventID)).Error("set resolution", sl.Err(err))
+			continue
+		}
+		event.Resolution = resolution
+	}
+	log.With(slog.Int("events", len(outcome.Events)), slog.Bool("complete", outcome.IsComplete())).Info("task resolved")
+	return outcome, nil
+}
+
+// leftInChats reports whether a message of the event is still in a chat.
+func leftInChats(event *entity.Event) bool {
+	for i := range event.Deliveries {
+		if event.Deliveries[i].IsSent() && event.Deliveries[i].MessageID != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // eventToWork reads an event the sender may triage or retract. One still being
 // delivered is refused: the delivery would write over what is recorded now.
 func (c *Core) eventToWork(sender *entity.Sender, eventID string) (*entity.Event, error) {
